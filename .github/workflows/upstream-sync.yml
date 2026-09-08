@@ -1,12 +1,15 @@
 name: Upstream Sync
 
-# Roxo is a fork that intends to keep taking Rojo's changes indefinitely, so
-# falling behind is the default outcome unless something actively pulls. This
-# workflow does the pulling: it merges upstream into a branch, proves the result
-# still builds, and opens a pull request for a human to approve.
+# Roxo is upstream Rojo with a small patch series applied on top. `main` is
+# literally rojo-rbx/rojo's history plus a handful of Roxo commits, so
+# `git log upstream/master..main` is the complete list of what this fork
+# changes.
 #
-# It deliberately never pushes to the default branch. An automated merge that
-# lands unreviewed is how a fork silently loses its own changes.
+# Keeping that shape means taking upstream by *rebase*, not merge: the patches
+# replay onto the new upstream and the fork never accumulates merge commits that
+# obscure what it actually changed. This workflow does the replay, proves it
+# still builds, and leaves the result for a human — a rebase rewrites history,
+# which is not something to do to a shared branch unattended.
 
 on:
   schedule:
@@ -17,9 +20,14 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: "Upstream ref to merge (defaults to master)"
+        description: "Upstream ref to rebase onto"
         required: false
         default: "master"
+      apply:
+        description: "Force-push the rebased result to main if tests pass"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -31,13 +39,13 @@ env:
 
 jobs:
   sync:
-    name: Merge upstream Rojo
+    name: Rebase onto upstream Rojo
     runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # The merge needs real history on both sides, not a shallow clone.
+          # The rebase needs real history on both sides, not a shallow clone.
           fetch-depth: 0
           submodules: true
 
@@ -51,128 +59,113 @@ jobs:
           git remote add upstream "$UPSTREAM_REPO" || git remote set-url upstream "$UPSTREAM_REPO"
           git fetch upstream --tags
 
-      - name: Check for new upstream commits
-        id: check
+      - name: Work out the current patch series
+        id: series
         run: |
           UPSTREAM_SHA="$(git rev-parse "upstream/$UPSTREAM_REF")"
           echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
           echo "upstream_short=${UPSTREAM_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
-          # An upstream commit already reachable from our default branch means a
-          # previous run merged it and there is nothing to do.
-          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+          # The commit our patches currently sit on. Because main is
+          # upstream-plus-patches, the merge base is exactly that point.
+          BASE="$(git merge-base HEAD "$UPSTREAM_SHA")"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+          COUNT="$(git rev-list --count "$BASE"..HEAD)"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+          echo "Roxo carries $COUNT patch(es) on top of $BASE:"
+          git log --oneline "$BASE"..HEAD
+
+          if [ "$BASE" = "$UPSTREAM_SHA" ]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "Already up to date with upstream $UPSTREAM_REF."
+            echo "Already rebased onto the latest upstream $UPSTREAM_REF."
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "New upstream commits since our last merge:"
-            git log --oneline HEAD.."$UPSTREAM_SHA" | head -50
+            echo "New upstream commits to take:"
+            git log --oneline "$BASE".."$UPSTREAM_SHA" | head -50
           fi
 
-      - name: Skip if an open sync pull request already exists
-        id: existing
-        if: steps.check.outputs.has_changes == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Replay the patch series onto new upstream
+        id: rebase
+        if: steps.series.outputs.has_changes == 'true'
         run: |
-          # Opening a second sync PR while the first is unresolved just produces
-          # two branches with the same conflicts to fix.
-          COUNT="$(gh pr list --state open --search "head:upstream-sync/" --json number --jq 'length')"
-
-          if [ "$COUNT" -gt 0 ]; then
-            echo "open=true" >> "$GITHUB_OUTPUT"
-            echo "An upstream sync pull request is already open; leaving it to be resolved first."
-          else
-            echo "open=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Merge upstream into a sync branch
-        id: merge
-        if: steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
-        run: |
-          BRANCH="upstream-sync/${{ steps.check.outputs.upstream_short }}"
+          BRANCH="upstream-sync/${{ steps.series.outputs.upstream_short }}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
           git checkout -b "$BRANCH"
 
-          if git merge --no-edit "upstream/$UPSTREAM_REF"; then
+          if git rebase --onto "upstream/$UPSTREAM_REF" "${{ steps.series.outputs.base }}"; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            echo "All ${{ steps.series.outputs.count }} patch(es) replayed cleanly."
           else
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
 
-            # Commit the conflicted tree rather than aborting. A branch a human
-            # can check out and finish is far more useful than a failed job with
-            # no artifact, and the marker guard below stops it merging as-is.
-            {
-              echo "Conflicting files:"
-              git diff --name-only --diff-filter=U
-            } | tee conflicts.txt
+            echo "Conflicting files:"
+            git diff --name-only --diff-filter=U || true
 
-            git add -A
-            git commit -m "Merge upstream Rojo ${{ steps.check.outputs.upstream_short }} (CONFLICTED)
-
-          This merge has unresolved conflicts and must not be merged as-is.
-          Resolve the conflicts on this branch, then push.
-
-          (AI-assisted)"
+            # Leave the rebase stopped rather than committing markers. A
+            # conflicted rebase is resolved by continuing it, so a human needs
+            # the rebase state intact, not a commit full of markers.
+            git rebase --abort
+            echo "Rebase aborted; resolve this one by hand."
           fi
 
-      - name: Verify the merged tree builds and tests
+      - name: Verify the rebased tree builds and tests
         id: verify
-        if: steps.merge.outputs.conflicts == 'false'
+        if: steps.rebase.outputs.conflicts == 'false'
         continue-on-error: true
         run: |
           rustup toolchain install stable --profile minimal
           cargo test --locked
 
-      - name: Push the sync branch
-        if: steps.merge.outcome == 'success' && steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
-        run: git push origin "${{ steps.merge.outputs.branch }}"
+      - name: Push the rebased branch
+        if: steps.rebase.outputs.conflicts == 'false'
+        run: git push --force origin "${{ steps.rebase.outputs.branch }}"
 
-      - name: Open a pull request
-        if: steps.merge.outcome == 'success' && steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
+      - name: Apply to main
+        # Only on an explicit, manually dispatched request, and only when the
+        # tests actually passed. A rebase rewrites main's history; that is a
+        # decision a person makes, not a cron job.
+        if: >
+          steps.rebase.outputs.conflicts == 'false' &&
+          steps.verify.outcome == 'success' &&
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.apply == 'true'
+        run: |
+          git push --force-with-lease origin "HEAD:${{ github.ref_name }}"
+          echo "main now sits on upstream ${{ steps.series.outputs.upstream_short }}."
+
+      - name: Report
+        if: steps.series.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          COMMITS="$(git log --oneline "${{ github.sha }}..upstream/$UPSTREAM_REF" | head -40)"
+          {
+            echo "## Upstream sync"
+            echo
+            echo "Rebasing **${{ steps.series.outputs.count }}** Roxo patch(es) onto \`rojo-rbx/rojo@${{ steps.series.outputs.upstream_short }}\`."
+            echo
 
-          if [ "${{ steps.merge.outputs.conflicts }}" = "true" ]; then
-            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }} (conflicts)"
-            STATUS="⚠️ **This merge has conflicts** and is opened as a draft. Check the branch out, resolve the conflicts, and push."
-            DRAFT="--draft"
-          elif [ "${{ steps.verify.outcome }}" = "success" ]; then
-            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }}"
-            STATUS="✅ Merged cleanly and \`cargo test\` passed."
-            DRAFT=""
-          else
-            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }} (tests failing)"
-            STATUS="⚠️ Merged cleanly but \`cargo test\` failed. Roxo's changes likely need updating for an upstream change."
-            DRAFT="--draft"
-          fi
-
-          BODY=$(cat <<EOF
-          Merges \`rojo-rbx/rojo@$UPSTREAM_REF\` (\`${{ steps.check.outputs.upstream_short }}\`) into \`${{ github.ref_name }}\`.
-
-          $STATUS
-
-          ### Upstream commits
-
-          \`\`\`
-          $COMMITS
-          \`\`\`
-
-          ### Before merging
-
-          - Check that Roxo's additions still behave: auto-connect discovery, the client registry, \`/api/roxo/status\`, and the MCP server.
-          - If upstream changed \`ServerInfoResponse\` or the protocol version, confirm the plugin's handshake still round-trips.
-
-          [🤖] AI was used to create this pull request body.
-          EOF
-          )
-
-          gh pr create \
-            --title "$TITLE" \
-            --body "$BODY" \
-            --base "${{ github.ref_name }}" \
-            --head "${{ steps.merge.outputs.branch }}" \
-            $DRAFT
+            if [ "${{ steps.rebase.outputs.conflicts }}" = "true" ]; then
+              echo "⚠️ **Conflicts.** Resolve by hand:"
+              echo
+              echo '```sh'
+              echo "git fetch upstream"
+              echo "git rebase --onto upstream/$UPSTREAM_REF ${{ steps.series.outputs.base }}"
+              echo '```'
+            elif [ "${{ steps.verify.outcome }}" = "success" ]; then
+              echo "✅ Replayed cleanly and \`cargo test\` passed."
+              echo
+              echo "Branch \`${{ steps.rebase.outputs.branch }}\` is ready. To take it:"
+              echo
+              echo '```sh'
+              echo "git fetch origin && git reset --hard origin/${{ steps.rebase.outputs.branch }}"
+              echo "git push --force-with-lease origin main"
+              echo '```'
+              echo
+              echo "Or re-run this workflow from the Actions tab with **apply** checked."
+            else
+              echo "⚠️ Replayed cleanly but \`cargo test\` failed — a Roxo patch likely needs updating for an upstream change."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

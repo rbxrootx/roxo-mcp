@@ -46,6 +46,10 @@ jobs:
           path: Roxo.rbxm
       
       - name: Upload Plugin to Roblox
+        # Skipped until the Roxo plugin has been published once by hand and its
+        # real asset ID is in plugin/UploadDetails.json. Non-fatal so a release
+        # still ships binaries and the .rbxm in the meantime.
+        continue-on-error: true
         env:
           RBX_API_KEY: ${{ secrets.PLUGIN_UPLOAD_TOKEN }}
           RBX_UNIVERSE_ID: ${{ vars.PLUGIN_CI_PLACE_ID }}
@@ -92,7 +96,9 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     env:
-      BIN: rojo
+      # Roxo installs under both names; a release that shipped only one would
+      # leave anyone using it as a Rojo drop-in without the binary they invoke.
+      BINS: "roxo rojo"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,7 +135,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          echo "ARTIFACT_NAME=$BIN-${TAG_NAME#v}-${{ matrix.label }}.zip" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=roxo-${TAG_NAME#v}-${{ matrix.label }}.zip" >> "$GITHUB_ENV"
 
       - name: Create Archive and Upload to Release
         shell: bash
@@ -139,11 +145,15 @@ jobs:
           mkdir staging
 
           if [ "${{ matrix.host }}" = "windows" ]; then
-            cp "target/${{ matrix.target }}/release/$BIN.exe" staging/
+            for bin in $BINS; do
+              cp "target/${{ matrix.target }}/release/$bin.exe" staging/
+            done
             cd staging
             7z a ../$ARTIFACT_NAME *
           else
-            cp "target/${{ matrix.target }}/release/$BIN" staging/
+            for bin in $BINS; do
+              cp "target/${{ matrix.target }}/release/$bin" staging/
+            done
             cd staging
             zip ../$ARTIFACT_NAME *
           fi
@@ -155,3 +165,20 @@ jobs:
         with:
           path: ${{ env.ARTIFACT_NAME }}
           name: ${{ env.ARTIFACT_NAME }}
+
+  publish:
+    name: Publish Release
+    # Runs only after every platform has uploaded, so a release is never
+    # visible with half its binaries missing.
+    needs: ["create-release", "build-plugin", "build"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit ${{ github.ref_name }} --draft=false --latest
+          echo "Published ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+

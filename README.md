@@ -1,6 +1,11 @@
 <div align="center">
     <h1>Roxo</h1>
     <p><strong>MCP-native Rojo.</strong></p>
+    <p>
+        <a href="https://github.com/rbxrootx/roxo-mcp/actions/workflows/ci.yml"><img src="https://github.com/rbxrootx/roxo-mcp/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+        <a href="https://github.com/rbxrootx/roxo-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/rbxrootx/roxo-mcp?label=release" alt="Latest release" /></a>
+        <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MPL--2.0-blue.svg" alt="MPL-2.0" /></a>
+    </p>
 </div>
 
 <hr />
@@ -37,18 +42,32 @@ Everything Rojo does still works. Roxo is a **drop-in replacement** — same `.p
 - [Auto-connect](#auto-connect)
 - [Agent workflow](#agent-workflow)
 - [CLI additions](#cli-additions)
+- [Bugs Roxo fixes](#bugs-roxo-fixes)
 - [HTTP API additions](#http-api-additions)
 - [Project file additions](#project-file-additions)
-- [Staying current with Rojo](#staying-current-with-rojo)
+- [How Roxo tracks Rojo](#how-roxo-tracks-rojo)
+- [Building and releasing](#building-and-releasing)
+- [Relationship to Rojo](#relationship-to-rojo)
+- [License](#license)
 
 ## Install
+
+Grab a build from [releases](https://github.com/rbxrootx/roxo-mcp/releases/latest) — every tag ships `roxo` and `rojo` for Linux, macOS, and Windows on both x86-64 and ARM, plus `Roxo.rbxm`. Put the binaries on your `PATH`, then:
+
+```sh
+roxo plugin install
+```
+
+Or build from source:
 
 ```sh
 cargo install --git https://github.com/rbxrootx/roxo-mcp roxo
 roxo plugin install
 ```
 
-`roxo plugin install` writes the Studio plugin to the same file Rojo uses, so installing Roxo **replaces** Rojo's managed plugin rather than leaving two plugins fighting over the same place. That is deliberate — running both at once is exactly the failure Roxo's safety gate exists to prevent.
+Both names are installed. `roxo` and `rojo` are the same binary, so Roxo drops into a toolchain that expects Rojo without touching a single script.
+
+`roxo plugin install` writes the Studio plugin to the same file Rojo uses, so installing Roxo **replaces** Rojo's managed plugin rather than leaving two plugins fighting over the same place. That is deliberate — running both at once is exactly the failure Roxo's safety gate exists to prevent. Studio picks the new plugin up without a restart.
 
 ## MCP server
 
@@ -223,6 +242,22 @@ Each `roxo serve` drops a JSON beacon in `~/.roxo/sessions/` and removes it on e
 
 The Studio plugin can't read files, so it still scans ports. Everything that *can* read files uses the registry.
 
+## Bugs Roxo fixes
+
+Roxo carries fixes for upstream Rojo bugs that hurt unattended use most. A person watching Studio notices when sync dies; an agent does not, and keeps writing into a session nothing is listening to.
+
+**Deleting a directory no longer kills the server.** Removing a directory removes its children too, and each child's filesystem event arrives naming a parent that is already gone. Resolving that parent used `.unwrap()`, and because the build aborts on panic, the whole process died. `rm -rf`, a branch switch that drops a folder, or dragging a directory to the trash all triggered it — three seconds to reproduce. Upstream has it as [rojo#1236], [rojo#1206], and [rojo#1309]. Removals now resolve against the nearest surviving ancestor.
+
+**A file that vanishes mid-event is skipped, not fatal.** Editors write through temporary files and build tools churn; the race is routine.
+
+**An unapplicable filesystem event is logged, not fatal.**
+
+These are ordinary bug fixes, not Roxo-specific behavior. They are offered upstream too — Roxo would rather Rojo have them.
+
+[rojo#1206]: https://github.com/rojo-rbx/rojo/issues/1206
+[rojo#1236]: https://github.com/rojo-rbx/rojo/issues/1236
+[rojo#1309]: https://github.com/rojo-rbx/rojo/issues/1309
+
 ## HTTP API additions
 
 `GET /api/roxo/status` returns the JSON above. It's served as JSON, not msgpack, so nothing needs a decoder to ask whether Studio is connected.
@@ -261,21 +296,32 @@ Clients identify themselves with query parameters on the handshake (`placeId`, `
 
 `projectId` is intentionally **not** stable across machines by default. Pairing is a local trust decision, and a shared identifier would let a project file in a repository claim someone else's pairing.
 
-## Staying current with Rojo
+## How Roxo tracks Rojo
 
-Roxo tracks upstream Rojo rather than drifting from it.
+Roxo is **upstream Rojo with a patch series on top**, not a fork that drifted. `main` is literally `rojo-rbx/rojo`'s history with a handful of Roxo commits appended, so one command shows you the entire diff of the project:
 
-`.github/workflows/upstream-sync.yml` runs daily: it merges `rojo-rbx/rojo@master` into a branch, runs the test suite, and opens a pull request. It never pushes to `main` — an automated merge that lands unreviewed is how a fork silently loses its own changes.
+```sh
+git remote add upstream https://github.com/rojo-rbx/rojo.git
+git fetch upstream
+git log --oneline upstream/master..main    # every change Roxo makes
+```
 
-* Clean merge, tests pass → a normal PR
-* Clean merge, tests fail → a draft PR, since Roxo's additions likely need updating
-* Conflicts → the conflicted merge is committed to the branch and opened as a draft, so there's something to check out and finish rather than a failed job with no artifact
+Upstream is taken by **rebase**, not merge. The patches replay onto the new Rojo and the history stays flat, so the fork never accumulates merge commits that obscure what it actually changed.
 
-A CI job fails on unresolved conflict markers, so a conflicted branch can't be merged green.
+`.github/workflows/upstream-sync.yml` runs daily: it replays the patch series onto the latest Rojo, runs the test suite, and pushes the result to a branch with a summary. It does not touch `main` on its own — a rebase rewrites history, which is a decision a person makes. Run it from the Actions tab with **apply** checked to land it, or do it by hand:
 
-To keep merges boring, Roxo's changes live in new files wherever possible (`src/auto_connect.rs`, `src/client_registry.rs`, `src/session_registry.rs`, `src/cli/{sessions,status,wait,mcp}.rs`, `plugin/src/AutoConnect.lua`) rather than being woven through Rojo's.
+```sh
+git rebase --onto upstream/master $(git merge-base HEAD upstream/master)
+git push --force-with-lease origin main
+```
 
-Trigger a sync by hand from the Actions tab.
+To keep replays boring, Roxo's own code lives in new files wherever possible — `src/auto_connect.rs`, `src/client_registry.rs`, `src/session_registry.rs`, `src/cli/{sessions,status,wait,mcp}.rs`, `plugin/src/AutoConnect.lua` — rather than being woven through Rojo's.
+
+## Building and releasing
+
+Every push to `main` runs the full suite across Linux, macOS, and Windows, and attaches a built `roxo` binary and `Roxo.rbxm` plugin to the run, so trying a change needs no local Rust toolchain.
+
+Tagging `v*` builds all six platform targets, ships them with the plugin, and publishes the release once every artifact has landed.
 
 ## Relationship to Rojo
 

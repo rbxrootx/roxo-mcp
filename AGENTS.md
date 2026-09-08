@@ -84,9 +84,13 @@ These are not style preferences. Roxo connects to Studio without a human confirm
 
 ## Upstream Sync
 
-`.github/workflows/upstream-sync.yml` merges `rojo-rbx/rojo@master` daily and opens a pull request. It never pushes to `main`.
+Roxo is upstream Rojo with a patch series on top. `main` is Rojo's history plus a handful of Roxo commits, and `git log --oneline upstream/master..main` is the complete list of what this fork changes. **Keep it that way.** Upstream is taken by rebase, never merge — a merge commit buries the patch series and the fork stops being auditable.
 
-When resolving a sync conflict, Roxo's behavior wins in Roxo's own modules, and Rojo's wins everywhere else unless the conflict is specifically about something Roxo changed on purpose. Check `git log` on the conflicting hunk before choosing.
+`.github/workflows/upstream-sync.yml` replays the series onto the latest Rojo daily, tests it, and pushes a branch. It does not touch `main` unless a human dispatches it with `apply`.
+
+When resolving a replay conflict, Roxo's behavior wins in Roxo's own modules, and Rojo's wins everywhere else unless the conflict is specifically about something Roxo changed on purpose. Check `git log` on the conflicting hunk before choosing.
+
+Prefer fixing a bug in a way that could be sent upstream. A patch Rojo accepts is a patch Roxo no longer has to carry.
 
 Do not disable the conflict-marker CI job to get a branch merged.
 

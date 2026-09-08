@@ -148,3 +148,44 @@ jobs:
           echo "::error::Unresolved merge conflict markers are present."
           exit 1
         fi
+
+  dev-build:
+    name: Dev Build
+    # Every push to main leaves a downloadable build attached to the run, so
+    # trying a change never requires a local Rust toolchain or a tagged release.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Setup Rokit
+      uses: CompeyDev/setup-rokit@v0.1.2
+
+    - name: Build
+      run: cargo build --release --locked
+
+    - name: Build Studio plugin
+      run: cargo run --release --locked -- build plugin.project.json --output Roxo.rbxm
+
+    - name: Upload binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: roxo-linux-x86_64-${{ github.sha }}
+        path: |
+          target/release/roxo
+          target/release/rojo
+        if-no-files-found: error
+
+    - name: Upload Studio plugin
+      uses: actions/upload-artifact@v4
+      with:
+        name: Roxo.rbxm-${{ github.sha }}
+        path: Roxo.rbxm
+        if-no-files-found: error
+
