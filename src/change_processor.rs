@@ -2,7 +2,7 @@ use crossbeam_channel::{select, Receiver, RecvError, Sender};
 use jod_thread::JoinHandle;
 use memofs::{IoResultExt, Vfs, VfsEvent};
 use rbx_dom_weak::types::{Ref, Variant};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -161,24 +161,43 @@ impl JobThreadContext {
         log::trace!("Vfs event: {:?}", event);
 
         // Update the VFS immediately with the event.
-        self.vfs
-            .commit_event(&event)
-            .expect("Error applying VFS change");
+        //
+        // A failure here used to abort the process. It is not worth a crash:
+        // the filesystem moved in a way this event no longer describes, which
+        // the next event will correct.
+        if let Err(err) = self.vfs.commit_event(&event) {
+            log::error!("Could not apply filesystem change: {err}");
+            return;
+        }
 
         // For a given VFS event, we might have many changes to different parts
         // of the tree. Calculate and apply all of these changes.
         let applied_patches = match event {
             VfsEvent::Create(path) | VfsEvent::Write(path) => {
-                self.apply_patches(self.vfs.canonicalize(&path).unwrap())
+                // The file can be gone again by the time we get here — editors
+                // write through temporary files, and build tools churn. That
+                // is a normal race, not a reason to take the server down.
+                match self.vfs.canonicalize(&path) {
+                    Ok(canonical) => self.apply_patches(canonical),
+                    Err(err) => {
+                        log::debug!(
+                            "Ignoring change to {} because it could not be resolved: {err}",
+                            path.display()
+                        );
+                        Vec::new()
+                    }
+                }
             }
-            VfsEvent::Remove(path) => {
-                // MemoFS does not track parent removals yet, so we can canonicalize
-                // the parent path safely and then append the removed path's file name.
-                let parent = path.parent().unwrap();
-                let file_name = path.file_name().unwrap();
-                let parent_normalized = self.vfs.canonicalize(parent).unwrap();
-                self.apply_patches(parent_normalized.join(file_name))
-            }
+            VfsEvent::Remove(path) => match canonicalize_removed(&self.vfs, &path) {
+                Some(canonical) => self.apply_patches(canonical),
+                None => {
+                    log::debug!(
+                        "Ignoring removal of {} because it could not be resolved",
+                        path.display()
+                    );
+                    Vec::new()
+                }
+            },
             _ => {
                 log::warn!("Unhandled VFS event: {:?}", event);
                 Vec::new()
@@ -382,4 +401,92 @@ fn compute_and_apply_changes(tree: &mut RojoTree, vfs: &Vfs, id: Ref) -> Option<
     };
 
     Some(applied_patch_set)
+}
+
+/// Resolves the canonical path of something that has just been removed.
+///
+/// A removed path cannot be canonicalized directly, so the parent is
+/// canonicalized and the name appended. That alone is not enough: deleting a
+/// directory removes its children too, and each child's event arrives naming a
+/// parent that is also gone, so canonicalizing the immediate parent fails as
+/// well. Walking up to the nearest ancestor that still exists and re-appending
+/// the rest resolves those, which matters because deleting a folder is an
+/// entirely ordinary thing to do — `rm -rf`, a branch switch, or dragging a
+/// directory to the trash all produce it.
+fn canonicalize_removed(vfs: &Vfs, path: &Path) -> Option<PathBuf> {
+    let mut suffix = Vec::new();
+    let mut current = path;
+
+    loop {
+        let parent = current.parent()?;
+        let file_name = current.file_name()?;
+
+        suffix.push(file_name);
+
+        if let Ok(canonical_parent) = vfs.canonicalize(parent) {
+            let mut resolved = canonical_parent;
+            for component in suffix.iter().rev() {
+                resolved.push(component);
+            }
+
+            return Some(resolved);
+        }
+
+        current = parent;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn resolves_a_file_whose_directory_still_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let vfs = Vfs::new_default().unwrap();
+
+        let removed = dir.path().join("gone.lua");
+        let resolved = canonicalize_removed(&vfs, &removed).unwrap();
+
+        assert_eq!(resolved.file_name().unwrap(), "gone.lua");
+        assert!(resolved.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn resolves_a_file_whose_whole_directory_was_removed() {
+        // The case that used to abort the process: deleting a directory emits
+        // events for its children, and by the time they arrive the directory
+        // they name is already gone.
+        let dir = tempfile::tempdir().unwrap();
+        let vfs = Vfs::new_default().unwrap();
+
+        let removed = dir.path().join("nested/deeper/more.lua");
+        let resolved = canonicalize_removed(&vfs, &removed)
+            .expect("a removal whose ancestors are also gone must still resolve");
+
+        assert!(resolved.ends_with("nested/deeper/more.lua"));
+
+        // The surviving ancestor is the part that had to be canonicalized.
+        let canonical_root = vfs.canonicalize(dir.path()).unwrap();
+        assert!(resolved.starts_with(&canonical_root));
+    }
+
+    #[test]
+    fn terminates_even_when_only_the_filesystem_root_survives() {
+        let vfs = Vfs::new_default().unwrap();
+
+        // Every ancestor but `/` is missing. The walk has to stop there and
+        // return a usable path rather than looping forever.
+        let resolved = canonicalize_removed(&vfs, Path::new("/nonexistent-root-xyz/a/b.lua"))
+            .expect("the filesystem root always exists, so this resolves");
+
+        assert!(resolved.ends_with("nonexistent-root-xyz/a/b.lua"));
+    }
+
+    #[test]
+    fn returns_none_for_a_path_with_no_parent() {
+        let vfs = Vfs::new_default().unwrap();
+
+        assert_eq!(canonicalize_removed(&vfs, Path::new("/")), None);
+    }
 }

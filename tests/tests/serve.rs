@@ -894,3 +894,51 @@ fn wait_for_status(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+/// Deleting a directory that contains files must not take the server down.
+///
+/// This is a regression test for a crash that reached upstream Rojo as several
+/// separate reports. Removing a directory also removes its children, and the
+/// child's event arrives naming a parent that no longer exists, so resolving
+/// that parent failed and the panic aborted the whole process. `rm -rf`, a
+/// branch switch that drops a folder, and dragging a directory to the trash all
+/// trigger it, and an unattended agent just loses its sync with no explanation.
+#[test]
+fn removing_a_directory_of_files_does_not_kill_the_server() {
+    run_serve_test("move_folder_of_stuff", |session, _redactions| {
+        let nested = session.path().join("src/nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("thing.lua"), "-- nested").unwrap();
+        fs::create_dir(nested.join("deeper")).unwrap();
+        fs::write(nested.join("deeper/more.lua"), "-- deeper").unwrap();
+
+        // Block until the watcher has actually reported the additions, so the
+        // removals below are processed as removals rather than as changes to
+        // something the server never saw. Waiting on the subscription rather
+        // than sleeping keeps this from being timing-dependent.
+        session
+            .get_api_socket_packet(SocketPacketType::Messages, 0)
+            .expect("the server should report the added directory");
+
+        fs::remove_dir_all(&nested).unwrap();
+
+        // The server has to still be answering after the removal. Before the
+        // fix this call failed because the process was gone.
+        let info = session.get_api_rojo().expect(
+            "the server died after a directory was removed; \
+             a removal whose parent is also gone must not be fatal",
+        );
+
+        assert_eq!(info.project_name, "move_folder_of_stuff");
+
+        // And it must still be live, not merely alive: removing the whole
+        // synced path and putting it back has to keep working.
+        fs::remove_dir_all(session.path().join("src")).unwrap();
+        fs::create_dir(session.path().join("src")).unwrap();
+        fs::write(session.path().join("src/init.lua"), "-- rebuilt").unwrap();
+
+        session
+            .get_api_rojo()
+            .expect("the server died after its synced directory was replaced");
+    });
+}

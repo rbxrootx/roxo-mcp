@@ -50,6 +50,16 @@ Roxo forks Rojo at v7.7.0. Everything below is new in the fork.
 * The plugin no longer ships Rojo's marketplace asset ID and creator. A release cut with the upload token set would have targeted Rojo's published plugin; the upload script now refuses the placeholder values instead.
 * Serve tests now wait on wall time rather than a fixed retry count, report the server's output when it fails to start, and keep their session beacons out of the developer's home directory.
 
+### Fixes for long-standing Rojo issues
+
+* **Deleting a directory no longer kills the server.** Removing a directory also removes its children, and each child's event arrives naming a parent that is already gone; resolving that parent panicked, and since the build aborts on panic the whole process died. `rm -rf`, a branch switch that drops a folder, or dragging a directory to the trash all triggered it. Reported upstream as [rojo#1236], [rojo#1206], and [rojo#1309]. Removals now resolve against the nearest surviving ancestor.
+* A file that disappears between the filesystem event and its handling is skipped rather than being fatal. Editors write through temporary files and build tools churn, so this race is routine.
+* A filesystem event that cannot be applied is logged and skipped instead of aborting the process.
+
+[rojo#1206]: https://github.com/rojo-rbx/rojo/issues/1206
+[rojo#1236]: https://github.com/rojo-rbx/rojo/issues/1236
+[rojo#1309]: https://github.com/rojo-rbx/rojo/issues/1309
+
 ### Inherited from Rojo
 
 * Fixed `$path` values that point outside the project folder failing to match `syncRule`s on Windows, which broke `rojo sourcemap` with a "could not be turned into a Roblox Instance" error. ([#1290])
