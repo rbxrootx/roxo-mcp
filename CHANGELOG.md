@@ -40,10 +40,15 @@ Roxo forks Rojo at v7.7.0. Everything below is new in the fork.
 * **`roxo sessions`** lists running serve sessions from a machine-local registry under `~/.roxo/sessions`, so discovery needs no port scanning.
 * **`roxo wait --for studio`** blocks until a Studio client attaches, so automation can tell a real sync from writing into the void.
 * **`roxo mcp`** serves Roxo's tools to AI agents over the Model Context Protocol.
-* **`autoConnect` and `projectId`** project file fields, plus `--auto-connect` and `--no-registry` on `serve`.
+* **`autoConnect` and `projectId`** project file fields, plus `--auto-connect` and `--no-registry` on `serve`. `"always"` applies only to unpublished places; a place with a real `PlaceId` must qualify through `servePlaceIds`, `gameId`, or a pairing, so a scratch project cannot follow a developer into a real game.
 * The server handshake now carries client identity, and `ServerInfoResponse` gained `serverName`, `projectId`, `autoConnect`, `projectPath`, `capabilities`, and `clientId`. All additive: a Rojo plugin works against a Roxo server and vice versa.
 * Installs as both `roxo` and `rojo`. Plugin settings migrate from Rojo's on first run.
-* Serve tests now wait on wall time rather than a fixed retry count, and report the server's output when it fails to start.
+* `roxo plugin install` now stages the model and swaps it in atomically, and flushes before reporting success. Previously it truncated the installed plugin before doing the work that could fail, so a bad pack left a zero-byte plugin and no working install.
+* Auto-connect now explains itself when it finds a server but declines to use it. Discovery already computed a reason per rejected server and discarded it, so a developer saw nothing at all and could not tell "not in servePlaceIds" from "Roxo is broken".
+* Discovery probes identify themselves, so they no longer appear in `roxo status` as anonymous clients alongside the real one.
+* Fixed discovery inserting a nil port when no prior sync existed: the configured port is a string, and an empty one is truthy in Lua while `tonumber("")` is nil.
+* The plugin no longer ships Rojo's marketplace asset ID and creator. A release cut with the upload token set would have targeted Rojo's published plugin; the upload script now refuses the placeholder values instead.
+* Serve tests now wait on wall time rather than a fixed retry count, report the server's output when it fails to start, and keep their session beacons out of the developer's home directory.
 
 ### Inherited from Rojo
 

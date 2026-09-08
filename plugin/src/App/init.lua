@@ -515,12 +515,14 @@ function App:tryAutoConnect()
 				else
 					-- The conflict is gone, so a future one is worth reporting.
 					self.reportedAmbiguity = false
+					self:reportRejectedServers(result.rejected)
 				end
 
 				return false
 			end
 
 			self.reportedAmbiguity = false
+			self.reportedRejections = nil
 
 			Log.trace(
 				"Auto-connecting to '{}' at {}:{} because of {}",
@@ -556,6 +558,41 @@ function App:tryAutoConnect()
 			Log.trace("Auto-connect discovery failed: {}", tostring(err))
 			return false
 		end)
+end
+
+--[[
+	Explains why a server that was found could not be connected to.
+
+	Silence is the worst possible outcome here. A developer who starts a server
+	and sees nothing happen cannot tell "auto-connect is off", "this place is
+	not in servePlaceIds", and "Roxo is broken" apart, and every reason
+	discovery computes is otherwise discarded. Logged at warn so it appears at
+	the default log level, since a user debugging this cannot be expected to
+	find the log level setting first.
+
+	Reported once per distinct set of reasons, because discovery re-runs every
+	few seconds and would otherwise fill the output.
+]]
+function App:reportRejectedServers(rejected)
+	if rejected == nil or #rejected == 0 then
+		-- Nothing was found at all, which is the ordinary state when no server
+		-- is running and is not worth saying anything about.
+		self.reportedRejections = nil
+		return
+	end
+
+	local lines = {}
+	for _, entry in rejected do
+		table.insert(lines, string.format("  '%s' on port %s: %s", entry.projectName, entry.port, entry.reason))
+	end
+
+	local signature = table.concat(lines, "\n")
+	if self.reportedRejections == signature then
+		return
+	end
+	self.reportedRejections = signature
+
+	Log.warn(string.format("Roxo found %d sync server(s) but did not connect automatically:\n%s", #rejected, signature))
 end
 
 --[[
@@ -1290,8 +1327,8 @@ function App:render()
 
 			toggleAction = e(StudioPluginAction, {
 				name = "RojoConnection",
-				title = "Rojo: Connect/Disconnect",
-				description = "Toggles the server for a Rojo sync session",
+				title = "Roxo: Connect/Disconnect",
+				description = "Toggles the server for a Roxo sync session",
 				icon = Assets.Images.PluginButton,
 				bindable = true,
 				onTriggered = function()
@@ -1307,8 +1344,8 @@ function App:render()
 
 			connectAction = e(StudioPluginAction, {
 				name = "RojoConnect",
-				title = "Rojo: Connect",
-				description = "Connects the server for a Rojo sync session",
+				title = "Roxo: Connect",
+				description = "Connects the server for a Roxo sync session",
 				icon = Assets.Images.PluginButton,
 				bindable = true,
 				onTriggered = function()
@@ -1320,8 +1357,8 @@ function App:render()
 
 			disconnectAction = e(StudioPluginAction, {
 				name = "RojoDisconnect",
-				title = "Rojo: Disconnect",
-				description = "Disconnects the server for a Rojo sync session",
+				title = "Roxo: Disconnect",
+				description = "Disconnects the server for a Roxo sync session",
 				icon = Assets.Images.PluginButton,
 				bindable = true,
 				onTriggered = function()
@@ -1336,7 +1373,7 @@ function App:render()
 			}, {
 				button = e(StudioToggleButton, {
 					name = "Roxo",
-					tooltip = "Show or hide the Rojo panel",
+					tooltip = "Show or hide the Roxo panel",
 					icon = self.state.toolbarIcon,
 					active = self.state.guiEnabled,
 					enabled = true,

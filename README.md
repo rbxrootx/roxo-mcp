@@ -53,7 +53,7 @@ Checked strongest first. Any one of these qualifies a server as a candidate:
 | `servePlaceIds` | The project lists this place's ID |
 | `gameId` | The project's `gameId` matches this place's universe |
 | Paired | A human connected this place to this project before, matched on project identity — not name |
-| Declared | The project opted in with `"autoConnect": "always"` |
+| Declared | The project opted in with `"autoConnect": "always"` **and** the place is unpublished |
 
 A server is disqualified outright if the place appears in `blockedPlaceIds`, if `servePlaceIds` exists and doesn't list the place, if the project sets `"autoConnect": "off"`, or if the protocol version doesn't match.
 
@@ -84,7 +84,9 @@ An unpublished place reports `PlaceId` of 0. There is nothing to match against, 
 * Connect once by hand to pair the place with the project, or
 * Set `"autoConnect": "always"` in the project file.
 
-`always` is a statement that the machine is trusted. It is the only mode where a server will accept a place it cannot identify.
+`always` is a statement that the machine is trusted. It is the only mode where a server will accept a place it cannot identify — and it applies *only* to unpublished places, for exactly that reason.
+
+Once a place has a real `PlaceId` it has an identity, so the strict tiers can do their job and `always` no longer overrides them. Without that limit, a scratch project left on `always` would follow you into whatever real game you opened next.
 
 ### Confirmation
 
@@ -163,7 +165,7 @@ Plus new flags on `serve`:
 
 | Flag | Purpose |
 | --- | --- |
-| `--auto-connect <off\|matching\|always>` | Override the project's policy for one run |
+| `--auto-connect <off\|matching\|always>` | Override the project's policy for one run (`always` still only applies to unpublished places) |
 | `--no-registry` | Don't advertise this session for discovery |
 
 `sessions`, `status`, and `wait` all accept `--port` or `--project` to pick a session, and `--json` for machine-readable output. When several sessions are running and none is named, they report the ambiguity rather than guessing — pointing an agent's writes at whichever project sorted first is the exact failure this all exists to avoid.

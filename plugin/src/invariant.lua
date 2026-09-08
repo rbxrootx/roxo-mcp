@@ -16,7 +16,7 @@ else
 		message = Fmt.fmt(message, ...)
 
 		local fullMessage = string.format(
-			"Rojo detected an invariant violation within itself:\n"
+			"Roxo detected an invariant violation within itself:\n"
 				.. "%s\n\n"
 				.. "This is a bug in Roxo. Please file an issue:\n"
 				.. "https://github.com/paradoxum-games/Roxo/issues",

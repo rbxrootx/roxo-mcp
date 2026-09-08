@@ -24,6 +24,16 @@ local PLUGIN_CREATOR_ID = UploadDetails.creatorId
 local PLUGIN_CREATOR_TYPE = UploadDetails.creatorType
 
 assert(typeof(PLUGIN_ID) == "number", "UploadDetails did not contain a number field 'assetId'")
+-- Roxo ships placeholder IDs so that a release cut before the plugin has been
+-- published cannot silently upload over whatever asset the fork inherited.
+assert(
+	PLUGIN_ID ~= 0,
+	"UploadDetails 'assetId' is still the placeholder 0. Publish the Roxo plugin once by hand, then put its asset ID in plugin/UploadDetails.json."
+)
+assert(
+	PLUGIN_CREATOR_ID ~= 0,
+	"UploadDetails 'creatorId' is still the placeholder 0. Set it to the group or user that owns the Roxo plugin."
+)
 assert(typeof(PLUGIN_NAME) == "string", "UploadDetails did not contain a string field 'name'")
 assert(typeof(PLUGIN_DESCRIPTION) == "string", "UploadDetails did not contain a string field 'description'")
 assert(typeof(PLUGIN_CREATOR_ID) == "number", "UploadDetails did not contain a number field 'creatorId'")

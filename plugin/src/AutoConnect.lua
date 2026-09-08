@@ -125,7 +125,12 @@ function AutoConnect.evaluate(serverInfo, context)
 		}
 	end
 
-	if policy == "always" then
+	-- `always` exists solely because an unpublished place reports a PlaceId of
+	-- 0 and so has nothing to match on. A published place has an identity, and
+	-- the checks above can use it, so `always` is not allowed to override them
+	-- there: otherwise a scratch project left on `always` will attach itself to
+	-- whatever real game the developer happens to open next.
+	if policy == "always" and placeId == 0 then
 		return {
 			reason = AutoConnect.MatchReason.Declared,
 			strength = REASON_STRENGTH[AutoConnect.MatchReason.Declared],
@@ -136,6 +141,12 @@ function AutoConnect.evaluate(serverInfo, context)
 		return nil,
 			"this place is unpublished, so it has no ID to match against. "
 				.. 'Set "autoConnect": "always" in the project file, or connect once by hand to pair them.'
+	end
+
+	if policy == "always" then
+		return nil,
+			"the project is set to 'always', which only applies to unpublished places. "
+				.. "Add this place to servePlaceIds, or connect once by hand to pair them."
 	end
 
 	return nil, "nothing identifies this place as belonging to the project"
@@ -213,7 +224,11 @@ end
 function AutoConnect.probe(host, port)
 	local baseUrl = baseUrlFor(host, port)
 
-	return Http.get(baseUrl .. "/api/rojo")
+	-- Identify the request as a probe. Discovery contacts every candidate port
+	-- and walks away from all but one, so without this the server records a
+	-- string of anonymous clients and `roxo status` shows phantom connections
+	-- next to the real one.
+	return Http.get(baseUrl .. "/api/rojo?client=roxo-plugin-probe")
 		:andThen(Http.Response.msgpack)
 		:andThen(function(body)
 			if not validateApiInfo(body) then
@@ -247,12 +262,18 @@ function AutoConnect.discover(options)
 
 	-- The user's configured port goes first so that it is probed even when it
 	-- sits outside the scanned range.
-	if options.preferredPort then
-		table.insert(ports, tonumber(options.preferredPort))
+	--
+	-- Converted before the check rather than after: the setting is a string,
+	-- and an empty one is truthy in Lua while `tonumber("")` is nil, so testing
+	-- the raw value would try to insert nil into the list.
+	local preferredPort = tonumber(options.preferredPort)
+
+	if preferredPort then
+		table.insert(ports, preferredPort)
 	end
 
 	for port = low, high do
-		if port ~= tonumber(options.preferredPort) then
+		if port ~= preferredPort then
 			table.insert(ports, port)
 		end
 	end

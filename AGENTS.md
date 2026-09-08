@@ -56,6 +56,7 @@ These are not style preferences. Roxo connects to Studio without a human confirm
 
 - **Never let an ambiguous match produce a connection.** If two servers both claim a place, connect to neither. A stronger proof does not win a tie.
 - **Never widen auto-connect's default.** `matching` requires the server to identify the place. Only an explicit opt-in in the project file may relax that.
+- **Never let `always` reach a published place.** It exists solely to cover an unpublished place's `PlaceId` of 0. A place with a real ID must qualify through `servePlaceIds`, `gameId`, or a pairing. Removing this limit lets a scratch project follow a developer into a real game — this has actually happened, which is why the rule is here.
 - **Never make a match reason invisible.** Anything that connects unattended must record why, so it surfaces in `roxo status`.
 - **Never break compatibility with upstream Rojo in either direction.** New API fields are additive and optional; new query parameters must be ignorable. Rojo's plugin must keep working against a Roxo server, and vice versa.
 

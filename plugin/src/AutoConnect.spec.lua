@@ -81,6 +81,26 @@ return function()
 			expect(match.reason).to.equal(AutoConnect.MatchReason.Declared)
 		end)
 
+		it("should not let 'always' attach to a published place", function()
+			-- A scratch project left on "always" must not follow the developer
+			-- into whatever real game they open next. Once a place has an ID,
+			-- it has to qualify on its own merits.
+			local info = serverInfo({ autoConnect = "always" })
+
+			expect(AutoConnect.evaluate(info, { placeId = 113452345799420 })).to.equal(nil)
+		end)
+
+		it("should still match a published place that 'always' also identifies", function()
+			-- Narrowing "always" must not disqualify a place that would have
+			-- matched anyway through a strict tier.
+			local info = serverInfo({ autoConnect = "always", expectedPlaceIds = { 123 } })
+
+			local match = AutoConnect.evaluate(info, { placeId = 123 })
+
+			expect(match).to.be.ok()
+			expect(match.reason).to.equal(AutoConnect.MatchReason.ServePlaceIds)
+		end)
+
 		it("should honor a project that turns auto-connect off", function()
 			local info = serverInfo({ autoConnect = "off", expectedPlaceIds = { 123 } })
 

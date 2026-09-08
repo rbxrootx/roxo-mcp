@@ -125,6 +125,11 @@ impl TestServeSession {
                 port_string.as_str(),
             ])
             .current_dir(working_dir)
+            // Keep the session registry inside the test's own directory. Left
+            // to itself the server advertises into the developer's real
+            // ~/.roxo, so a test run litters their machine with beacons for
+            // servers that no longer exist.
+            .env("ROXO_HOME", dir.path())
             .stdout(log)
             .stderr(log_err)
             .spawn()

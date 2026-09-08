@@ -515,7 +515,7 @@ function ServeSession:__initialSync(serverInfo)
 				return Promise.reject(
 					"Cannot sync a model as a place."
 						.. "\nEnsure Roxo is serving a project file that has a DataModel at the root of its tree and try again."
-						.. "\nSee project file docs: https://rojo.space/docs/v7/project-format/"
+						.. "\nSee project file docs: https://github.com/paradoxum-games/Roxo"
 				)
 			end
 		end
@@ -528,7 +528,7 @@ function ServeSession:__initialSync(serverInfo)
 		end
 
 		if userDecision == "Abort" then
-			return Promise.reject("Aborted Rojo sync operation")
+			return Promise.reject("Aborted Roxo sync operation")
 		elseif userDecision == "Reject" then
 			if not self.__twoWaySync then
 				return Promise.reject("Cannot reject sync operation without two-way sync enabled")
