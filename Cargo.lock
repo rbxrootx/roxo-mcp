@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "roxo"
-version = "7.7.0"
+version = "7.7.0+roxo.1"
 dependencies = [
  "anyhow",
  "backtrace",

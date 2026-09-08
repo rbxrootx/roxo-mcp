@@ -31,6 +31,8 @@ Making a new release? Simply add the new header with the version and date undern
 
 ## Unreleased
 
+## [7.7.0+roxo.1] (September 8, 2026)
+
 ### Roxo
 
 Roxo forks Rojo at v7.7.0. Everything below is new in the fork.
@@ -67,6 +69,7 @@ Roxo forks Rojo at v7.7.0. Everything below is new in the fork.
 * Fixed `rojo sourcemap --absolute` emitting verbatim (`\\?\`) paths on Windows, which broke require types in luau-lsp. ([#1290])
 * The plugin now disables the `Check for Updates` setting if you block access to `api.github.com`. ([#1297])
 
+[7.7.0+roxo.1]: https://github.com/rbxrootx/roxo-mcp/releases/tag/v7.7.0%2Broxo.1
 [#1290]: https://github.com/rojo-rbx/rojo/pull/1290
 [#1297]: https://github.com/rojo-rbx/rojo/pull/1297
 
