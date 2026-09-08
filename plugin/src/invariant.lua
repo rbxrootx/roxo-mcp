@@ -19,7 +19,7 @@ else
 			"Roxo detected an invariant violation within itself:\n"
 				.. "%s\n\n"
 				.. "This is a bug in Roxo. Please file an issue:\n"
-				.. "https://github.com/paradoxum-games/Roxo/issues",
+				.. "https://github.com/rbxrootx/roxo-mcp/issues",
 			message
 		)
 

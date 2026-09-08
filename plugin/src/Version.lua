@@ -140,7 +140,7 @@ function Version.retrieveLatestCompatible(options: {
 
 	Log.debug("Retrieving latest compatible version from GitHub")
 
-	local success, releases = Http.get("https://api.github.com/repos/paradoxum-games/Roxo/releases?per_page=10")
+	local success, releases = Http.get("https://api.github.com/repos/rbxrootx/roxo-mcp/releases?per_page=10")
 		:andThen(function(response)
 			if response.code >= 400 then
 				local message = string.format("HTTP %s:\n%s", tostring(response.code), response.body)

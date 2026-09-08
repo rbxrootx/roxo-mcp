@@ -515,7 +515,7 @@ function ServeSession:__initialSync(serverInfo)
 				return Promise.reject(
 					"Cannot sync a model as a place."
 						.. "\nEnsure Roxo is serving a project file that has a DataModel at the root of its tree and try again."
-						.. "\nSee project file docs: https://github.com/paradoxum-games/Roxo"
+						.. "\nSee project file docs: https://github.com/rbxrootx/roxo-mcp"
 				)
 			end
 		end

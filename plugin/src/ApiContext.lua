@@ -31,7 +31,7 @@ local function rejectWrongProtocolVersion(infoResponseBody)
 			.. "\nMake sure you have matching versions of both the Roxo plugin and server!"
 			.. "\n\nYour client is version %s, with protocol version %s. It expects server version %s."
 			.. "\nYour server is version %s, with protocol version %s."
-			.. "\n\nGo to https://github.com/paradoxum-games/Roxo for more details."
+			.. "\n\nGo to https://github.com/rbxrootx/roxo-mcp for more details."
 		):format(
 			Version.display(Config.version),
 			Config.protocolVersion,

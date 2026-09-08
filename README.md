@@ -1,30 +1,42 @@
 <div align="center">
     <h1>Roxo</h1>
-    <p><strong>Rojo, with the human taken off the critical path.</strong></p>
+    <p><strong>MCP-native Rojo.</strong></p>
 </div>
 
 <hr />
 
-**Roxo** is a fork of [Rojo](https://github.com/rojo-rbx/rojo) built for AI agents and automation.
+**Roxo** is a fork of [Rojo](https://github.com/rojo-rbx/rojo) that AI agents can actually drive.
 
-Rojo is excellent at what it does, but it assumes a person is sitting in Roblox Studio. Its serve session does nothing until someone opens the plugin and presses **Connect**, and the server never reports whether that ever happened. An agent can start `rojo serve`, write files all day, and have no idea that not a single change reached Studio.
+Rojo assumes a person is sitting in Roblox Studio. Its serve session does nothing until someone opens the plugin and presses **Connect**, and the server never reports whether that happened. An agent can start `rojo serve`, write files all day, and have no idea that not one change reached Studio.
 
-Roxo closes that gap. It keeps everything Rojo does and adds the pieces an unattended workflow needs:
+Roxo removes that assumption:
 
-* **Auto-connect** — the plugin finds a running server and attaches on its own, with a safety gate that makes syncing the wrong project into the wrong place effectively impossible.
-* **Observability** — `roxo status` answers "is Studio actually connected?", so automation can stop guessing.
-* **Discovery** — `roxo sessions` lists what's running, with no port scanning.
-* **MCP** — `roxo mcp` exposes all of it to agents natively.
+```sh
+roxo mcp        # 7 tools, JSON-RPC over stdio
+roxo status     # is Studio actually connected?
+roxo sessions   # what is running on this machine
+roxo wait --for studio
+```
 
-Roxo is a **drop-in replacement**. Same `.project.json` format, same default port, same protocol version. It installs as both `roxo` and `rojo`, so existing scripts, Rokit manifests, and editor extensions keep working untouched.
+```json
+{
+  "mcpServers": {
+    "roxo": { "command": "roxo", "args": ["mcp"] }
+  }
+}
+```
+
+An MCP server is only useful if something is listening on the other end, so the load-bearing piece underneath is **auto-connect**: the Studio plugin finds a running server and attaches on its own, gated so it cannot sync the wrong project into the wrong place. That gate is the interesting part, and it is documented in full below.
+
+Everything Rojo does still works. Roxo is a **drop-in replacement** — same `.project.json` format, same default port, same protocol version — and it installs as both `roxo` and `rojo`, so existing scripts, Rokit manifests, and editor extensions keep working untouched.
 
 ## Contents
 
 - [Install](#install)
+- [MCP server](#mcp-server)
 - [Auto-connect](#auto-connect)
 - [Agent workflow](#agent-workflow)
 - [CLI additions](#cli-additions)
-- [MCP server](#mcp-server)
 - [HTTP API additions](#http-api-additions)
 - [Project file additions](#project-file-additions)
 - [Staying current with Rojo](#staying-current-with-rojo)
@@ -32,15 +44,50 @@ Roxo is a **drop-in replacement**. Same `.project.json` format, same default por
 ## Install
 
 ```sh
-cargo install --git https://github.com/paradoxum-games/Roxo roxo
+cargo install --git https://github.com/rbxrootx/roxo-mcp roxo
 roxo plugin install
 ```
 
 `roxo plugin install` writes the Studio plugin to the same file Rojo uses, so installing Roxo **replaces** Rojo's managed plugin rather than leaving two plugins fighting over the same place. That is deliberate — running both at once is exactly the failure Roxo's safety gate exists to prevent.
 
+## MCP server
+
+```sh
+roxo mcp
+```
+
+Speaks JSON-RPC over stdin/stdout. All logging goes to stderr so it can't corrupt the protocol stream.
+
+| Tool | Purpose |
+| --- | --- |
+| `roxo_sessions` | List running serve sessions |
+| `roxo_status` | Session state, including whether Studio is connected |
+| `roxo_wait_for_studio` | Block until Studio attaches |
+| `roxo_serve_start` | Start a serve session for a project |
+| `roxo_serve_stop` | Stop a session this server started |
+| `roxo_build` | Build a place or model file without Studio |
+| `roxo_sourcemap` | Map files onto Roblox instances |
+
+Register it with an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "roxo": {
+      "command": "roxo",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Pass `--read-only` to expose only the tools that read state, for handing an agent a session it should observe but not steer.
+
+`roxo_serve_stop` only stops sessions started through `roxo_serve_start`. Killing a server the agent didn't start would let it silently take down a developer's own session.
+
 ## Auto-connect
 
-This is the reason Roxo exists. The plugin looks for a serve session and connects without anyone pressing a button.
+This is what makes the MCP tools above worth anything. The plugin looks for a serve session and connects without anyone pressing a button — otherwise `roxo_serve_start` would just start a server nobody is listening to.
 
 Removing the button naively would be worse than the problem it solves: a plugin that attaches to whatever server it finds will cheerfully overwrite one game with another game's source. So the rule is that the **server has to prove it belongs to this place**, and the proof has to be unambiguous.
 
@@ -175,41 +222,6 @@ Plus new flags on `serve`:
 Each `roxo serve` drops a JSON beacon in `~/.roxo/sessions/` and removes it on exit. Stale beacons — from a server killed with a signal, where cleanup never ran — are pruned by process ID when the directory is listed, so discovery never points at a dead port. Set `ROXO_HOME` to relocate the directory.
 
 The Studio plugin can't read files, so it still scans ports. Everything that *can* read files uses the registry.
-
-## MCP server
-
-```sh
-roxo mcp
-```
-
-Speaks JSON-RPC over stdin/stdout. All logging goes to stderr so it can't corrupt the protocol stream.
-
-| Tool | Purpose |
-| --- | --- |
-| `roxo_sessions` | List running serve sessions |
-| `roxo_status` | Session state, including whether Studio is connected |
-| `roxo_wait_for_studio` | Block until Studio attaches |
-| `roxo_serve_start` | Start a serve session for a project |
-| `roxo_serve_stop` | Stop a session this server started |
-| `roxo_build` | Build a place or model file without Studio |
-| `roxo_sourcemap` | Map files onto Roblox instances |
-
-Register it with an MCP client:
-
-```json
-{
-  "mcpServers": {
-    "roxo": {
-      "command": "roxo",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Pass `--read-only` to expose only the tools that read state, for handing an agent a session it should observe but not steer.
-
-`roxo_serve_stop` only stops sessions started through `roxo_serve_start`. Killing a server the agent didn't start would let it silently take down a developer's own session.
 
 ## HTTP API additions
 

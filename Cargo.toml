@@ -9,9 +9,9 @@ authors = [
 ]
 description = "Rojo-compatible Roblox sync tooling built for AI agents and automation"
 license = "MPL-2.0"
-homepage = "https://github.com/paradoxum-games/Roxo"
-documentation = "https://github.com/paradoxum-games/Roxo"
-repository = "https://github.com/paradoxum-games/Roxo"
+homepage = "https://github.com/rbxrootx/roxo-mcp"
+documentation = "https://github.com/rbxrootx/roxo-mcp"
+repository = "https://github.com/rbxrootx/roxo-mcp"
 readme = "README.md"
 edition = "2021"
 build = "build.rs"
