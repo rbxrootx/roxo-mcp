@@ -16,8 +16,8 @@ end
 
 local ContentProvider = game:GetService("ContentProvider")
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Packages = Roxo.Packages
 
 local Roact = require(Packages.Roact)
 

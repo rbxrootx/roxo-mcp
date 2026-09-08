@@ -1,5 +1,5 @@
 [package]
-name = "rojo"
+name = "roxo"
 version = "7.7.0"
 rust-version = "1.88"
 authors = [
@@ -7,11 +7,11 @@ authors = [
     "Micah Reid <git@dekkonot.com>",
     "Ken Loeffler <kenloef@gmail.com>",
 ]
-description = "Enables professional-grade development tools for Roblox developers"
+description = "Rojo-compatible Roblox sync tooling built for AI agents and automation"
 license = "MPL-2.0"
-homepage = "https://rojo.space"
-documentation = "https://rojo.space/docs"
-repository = "https://github.com/rojo-rbx/rojo"
+homepage = "https://github.com/paradoxum-games/Roxo"
+documentation = "https://github.com/paradoxum-games/Roxo"
+repository = "https://github.com/paradoxum-games/Roxo"
 readme = "README.md"
 edition = "2021"
 build = "build.rs"
@@ -38,8 +38,12 @@ profile-with-tracy = ["profiling/profile-with-tracy"]
 members = ["crates/*"]
 
 [lib]
-name = "librojo"
+name = "libroxo"
 path = "src/lib.rs"
+
+[[bin]]
+name = "roxo"
+path = "src/main.rs"
 
 [[bench]]
 name = "build"

@@ -1,6 +1,6 @@
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
+local Packages = Roxo.Packages
 
 local Http = require(Packages.Http)
 local Promise = require(Packages.Promise)
@@ -140,7 +140,7 @@ function Version.retrieveLatestCompatible(options: {
 
 	Log.debug("Retrieving latest compatible version from GitHub")
 
-	local success, releases = Http.get("https://api.github.com/repos/rojo-rbx/rojo/releases?per_page=10")
+	local success, releases = Http.get("https://api.github.com/repos/paradoxum-games/Roxo/releases?per_page=10")
 		:andThen(function(response)
 			if response.code >= 400 then
 				local message = string.format("HTTP %s:\n%s", tostring(response.code), response.body)
@@ -224,7 +224,7 @@ function Version.getUpdateMessage(): string?
 	end
 
 	return string.format(
-		"A newer compatible version of Rojo, %s, was published %s! Go to the Rojo releases page to learn more.",
+		"A newer compatible version of Roxo, %s, was published %s! Go to the Roxo releases page to learn more.",
 		Version.display(latestCompatibleVersion.version),
 		timeUtil.elapsedToText(DateTime.now().UnixTimestamp - latestCompatibleVersion.publishedUnixTimestamp)
 	)

@@ -1,6 +1,6 @@
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
+local Packages = Roxo.Packages
 
 local Roact = require(Packages.Roact)
 local Log = require(Packages.Log)
@@ -95,6 +95,45 @@ function SettingsPage:render()
 			contentSize = self.contentSize,
 			transparency = self.props.transparency,
 		}, {
+			AutoConnect = e(Setting, {
+				id = "autoConnect",
+				name = "Auto Connect",
+				description = "Connect automatically to a running server that proves it belongs to this place, without waiting for you to press Connect. Only ever connects when exactly one project claims the place.",
+				transparency = self.props.transparency,
+				layoutOrder = layoutIncrement(),
+			}),
+
+			AutoConnectPortRange = e(Setting, {
+				id = "autoConnectPortRange",
+				name = "Auto Connect Ports",
+				description = "The range of ports searched when looking for a server",
+				transparency = self.props.transparency,
+				layoutOrder = layoutIncrement(),
+				visible = Settings:getBinding("autoConnect"),
+				input = e(TextInput, {
+					size = UDim2.new(0, 110, 0, 28),
+					text = Settings:getBinding("autoConnectPortRange"),
+					transparency = self.props.transparency,
+					enabled = true,
+					onEntered = function(text)
+						local low, high = string.match(text, "^%s*(%d+)%s*%-%s*(%d+)%s*$")
+
+						if low and high and tonumber(low) <= tonumber(high) then
+							Settings:set("autoConnectPortRange", string.format("%s-%s", low, high))
+						else
+							local single = string.match(text, "^%s*(%d+)%s*$")
+
+							if single then
+								Settings:set("autoConnectPortRange", single)
+							else
+								-- Force text back to last valid value
+								Settings:set("autoConnectPortRange", Settings:get("autoConnectPortRange"))
+							end
+						end
+					end,
+				}),
+			}),
+
 			AutoReconnect = e(Setting, {
 				id = "autoReconnect",
 				name = "Auto Reconnect",

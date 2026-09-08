@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 
 use crate::{
+    client_registry::{ClientId, ClientInfo},
     session_id::SessionId,
     snapshot::{
         AppliedPatchSet, InstanceMetadata as RojoInstanceMetadata, InstanceWithMeta, RojoTree,
@@ -23,6 +24,21 @@ use crate::{
 
 /// Server version to report over the API, not exposed outside this crate.
 pub(crate) const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Identifies this server implementation to clients, so a Roxo plugin can tell
+/// whether the extra fields below are trustworthy before acting on them.
+pub(crate) const SERVER_NAME: &str = "roxo";
+
+/// Optional behaviors this server supports beyond the base protocol. Clients
+/// should feature-check against this list rather than inferring from versions.
+pub(crate) fn capabilities() -> Vec<String> {
+    vec![
+        "auto-connect".to_owned(),
+        "status".to_owned(),
+        "client-registry".to_owned(),
+        "sessions".to_owned(),
+    ]
+}
 
 /// Current protocol version, which is required to match.
 pub const PROTOCOL_VERSION: u64 = 5;
@@ -165,6 +181,69 @@ pub struct ServerInfoResponse {
     pub game_id: Option<u64>,
     pub place_id: Option<u64>,
     pub root_instance_id: Ref,
+
+    // Everything below is a Roxo addition. These are extra map keys in a
+    // msgpack struct-as-map encoding, so a Rojo plugin that has never heard of
+    // them simply ignores them and keeps working.
+    /// Identifies which server implementation answered, so a client can tell a
+    /// Roxo server from an upstream Rojo one before relying on any of this.
+    pub server_name: String,
+
+    /// The stable project identity a place pairs with for auto-connect.
+    pub project_id: String,
+
+    /// The auto-connect policy this session is willing to honor.
+    pub auto_connect: String,
+
+    /// Absolute path of the project file being served, shown to a human when
+    /// asking them to confirm an ambiguous auto-connect.
+    pub project_path: String,
+
+    /// Optional features this server supports, so clients can degrade rather
+    /// than guess from version numbers.
+    pub capabilities: Vec<String>,
+
+    /// The id this server assigned to the connecting client, which the client
+    /// echoes back when it opens its change subscription so the two can be
+    /// recognized as the same session.
+    pub client_id: Option<ClientId>,
+}
+
+/// Response body from `/api/roxo/status`.
+///
+/// Served as JSON rather than msgpack because its audience is agents and shell
+/// pipelines, which should not need a msgpack decoder to ask whether Studio is
+/// connected.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStatusResponse {
+    pub session_id: SessionId,
+    pub server_name: String,
+    pub server_version: String,
+    pub protocol_version: u64,
+
+    pub project_name: String,
+    pub project_id: String,
+    pub project_path: String,
+
+    pub place_id: Option<u64>,
+    pub game_id: Option<u64>,
+    pub serve_place_ids: Option<HashSet<u64>>,
+    pub auto_connect: String,
+
+    pub uptime_seconds: u64,
+
+    /// True when at least one client holds a live change subscription. This is
+    /// the single field an agent should branch on before assuming its file
+    /// changes are reaching Studio.
+    pub studio_connected: bool,
+    pub client_count: usize,
+    pub clients: Vec<ClientInfo>,
+
+    /// Unix timestamp of the most recent patch broadcast, or `None` if nothing
+    /// has changed since the server started.
+    pub last_patch_at: Option<u64>,
+    pub patches_sent: u32,
 }
 
 /// Response body from /api/read/{id}

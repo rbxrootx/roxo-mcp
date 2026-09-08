@@ -12,7 +12,9 @@ use memofs::Vfs;
 use thiserror::Error;
 
 use crate::{
+    auto_connect::{derive_project_id, AutoConnectPolicy},
     change_processor::ChangeProcessor,
+    client_registry::ClientRegistry,
     message_queue::MessageQueue,
     project::{Project, ProjectError},
     session_id::SessionId,
@@ -85,6 +87,18 @@ pub struct ServeSession {
     /// A channel to send mutation requests on. These will be handled by the
     /// ChangeProcessor and trigger changes in the tree.
     tree_mutation_sender: Sender<PatchSet>,
+
+    /// The stable identity a Studio place pairs with when it auto-connects.
+    /// Resolved once at startup because deriving it touches the filesystem.
+    project_id: String,
+
+    /// Overrides the project file's auto-connect policy when the operator
+    /// passed `--auto-connect` or `--no-auto-connect` on the command line.
+    auto_connect_override: Option<AutoConnectPolicy>,
+
+    /// Which clients are attached, so that an agent can ask whether Studio ever
+    /// actually showed up.
+    clients: Arc<ClientRegistry>,
 }
 
 impl ServeSession {
@@ -126,6 +140,11 @@ impl ServeSession {
         let message_queue = Arc::new(message_queue);
         let vfs = Arc::new(vfs);
 
+        let project_id = root_project
+            .project_id
+            .clone()
+            .unwrap_or_else(|| derive_project_id(&root_project.file_location));
+
         let (tree_mutation_sender, tree_mutation_receiver) = crossbeam_channel::unbounded();
 
         log::trace!("Starting ChangeProcessor");
@@ -145,6 +164,9 @@ impl ServeSession {
             message_queue,
             tree_mutation_sender,
             vfs,
+            project_id,
+            auto_connect_override: None,
+            clients: Arc::new(ClientRegistry::new()),
         })
     }
 
@@ -218,6 +240,32 @@ impl ServeSession {
 
     pub fn root_project(&self) -> &Project {
         &self.root_project
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    /// The auto-connect policy in force, preferring a command line override
+    /// over the project file so that an operator can loosen or tighten a
+    /// checked-in setting for a single run.
+    pub fn auto_connect(&self) -> AutoConnectPolicy {
+        self.auto_connect_override
+            .or(self.root_project.auto_connect)
+            .unwrap_or_default()
+    }
+
+    pub fn set_auto_connect_override(&mut self, policy: Option<AutoConnectPolicy>) {
+        self.auto_connect_override = policy;
+    }
+
+    pub fn clients(&self) -> &Arc<ClientRegistry> {
+        &self.clients
+    }
+
+    /// The project file this session was started from.
+    pub fn project_path(&self) -> &Path {
+        &self.root_project.file_location
     }
 }
 

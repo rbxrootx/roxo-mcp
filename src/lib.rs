@@ -3,12 +3,15 @@
 #![recursion_limit = "1024"]
 
 pub mod cli;
+pub mod entrypoint;
 
 #[cfg(test)]
 mod tree_view;
 
 mod auth_cookie;
+mod auto_connect;
 mod change_processor;
+mod client_registry;
 mod glob;
 mod json;
 mod lua_ast;
@@ -20,6 +23,7 @@ mod resolution;
 mod rojo_ref;
 mod serve_session;
 mod session_id;
+mod session_registry;
 mod snapshot;
 mod snapshot_middleware;
 mod syncback;
@@ -28,9 +32,12 @@ mod web;
 
 // TODO: Work out what we should expose publicly
 
+pub use auto_connect::{derive_project_id, AutoConnectPolicy};
+pub use client_registry::{ClientHandshake, ClientId, ClientInfo, ClientRegistry};
 pub use project::*;
 pub use rojo_ref::*;
 pub use session_id::SessionId;
+pub use session_registry::SessionBeacon;
 pub use snapshot::{
     InstanceContext, InstanceMetadata, InstanceSnapshot, InstanceWithMeta, InstanceWithMetaMut,
     RojoDescendants, RojoTree,

@@ -13,16 +13,18 @@ use rbx_dom_weak::{
 };
 
 use crate::{
+    client_registry::{ClientHandshake, ClientId},
     serve_session::ServeSession,
     snapshot::{InstanceWithMeta, PatchSet, PatchUpdate},
     web::{
         interface::{
-            ErrorResponse, Instance, MessagesPacket, OpenResponse, ReadResponse,
-            ServerInfoResponse, SocketPacket, SocketPacketBody, SocketPacketType, SubscribeMessage,
-            WriteRequest, WriteResponse, PROTOCOL_VERSION, SERVER_VERSION,
+            capabilities, ErrorResponse, Instance, MessagesPacket, OpenResponse, ReadResponse,
+            ServerInfoResponse, SessionStatusResponse, SocketPacket, SocketPacketBody,
+            SocketPacketType, SubscribeMessage, WriteRequest, WriteResponse, PROTOCOL_VERSION,
+            SERVER_NAME, SERVER_VERSION,
         },
         origin::canonical,
-        util::{deserialize_msgpack, msgpack, msgpack_ok, serialize_msgpack},
+        util::{deserialize_msgpack, json, msgpack, msgpack_ok, serialize_msgpack},
     },
     web_api::{
         InstanceUpdate, RefPatchRequest, RefPatchResponse, SerializeRequest, SerializeResponse,
@@ -37,7 +39,13 @@ pub async fn call(
     let service = ApiService::new(serve_session, remote_addr);
 
     match (request.method(), request.uri().path()) {
-        (&Method::GET, "/api/rojo") => service.handle_api_rojo().await,
+        // `/api/roxo` is the name this server prefers; `/api/rojo` is kept as
+        // the wire-compatible spelling so an upstream Rojo plugin can still
+        // connect to a Roxo server unchanged.
+        (&Method::GET, "/api/rojo") | (&Method::GET, "/api/roxo") => {
+            service.handle_api_rojo(&request).await
+        }
+        (&Method::GET, "/api/roxo/status") => service.handle_api_status().await,
         (&Method::GET, path) if path.starts_with("/api/read/") => {
             service.handle_api_read(request).await
         }
@@ -82,9 +90,20 @@ impl ApiService {
     }
 
     /// Get a summary of information about the server
-    async fn handle_api_rojo(&self) -> Response<Body> {
+    async fn handle_api_rojo(&self, request: &Request<Body>) -> Response<Body> {
         let tree = self.serve_session.tree();
         let root_instance_id = tree.get_root_id();
+
+        // Clients identify themselves with query parameters rather than a body
+        // or headers, because this route is a GET that older clients already
+        // call with no parameters at all. Unknown parameters are ignored by
+        // those clients and by upstream Rojo, so the handshake costs nothing in
+        // compatibility.
+        let handshake = parse_handshake(request.uri().query());
+        let client_id = self
+            .serve_session
+            .clients()
+            .handshake(handshake, self.remote_addr.to_string());
 
         msgpack_ok(&ServerInfoResponse {
             server_version: SERVER_VERSION.to_owned(),
@@ -96,7 +115,42 @@ impl ApiService {
             place_id: self.serve_session.place_id(),
             game_id: self.serve_session.game_id(),
             root_instance_id,
+            server_name: SERVER_NAME.to_owned(),
+            project_id: self.serve_session.project_id().to_owned(),
+            auto_connect: self.serve_session.auto_connect().as_str().to_owned(),
+            project_path: self.serve_session.project_path().display().to_string(),
+            capabilities: capabilities(),
+            client_id: Some(client_id),
         })
+    }
+
+    /// Report whether anything is actually connected, and to what.
+    async fn handle_api_status(&self) -> Response<Body> {
+        let clients = self.serve_session.clients();
+        let message_queue = self.serve_session.message_queue();
+
+        json(
+            &SessionStatusResponse {
+                session_id: self.serve_session.session_id(),
+                server_name: SERVER_NAME.to_owned(),
+                server_version: SERVER_VERSION.to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                project_name: self.serve_session.project_name().to_owned(),
+                project_id: self.serve_session.project_id().to_owned(),
+                project_path: self.serve_session.project_path().display().to_string(),
+                place_id: self.serve_session.place_id(),
+                game_id: self.serve_session.game_id(),
+                serve_place_ids: self.serve_session.serve_place_ids().cloned(),
+                auto_connect: self.serve_session.auto_connect().as_str().to_owned(),
+                uptime_seconds: self.serve_session.start_time().elapsed().as_secs(),
+                studio_connected: clients.subscribed_count() > 0,
+                client_count: clients.subscribed_count(),
+                clients: clients.clients(),
+                last_patch_at: message_queue.last_push_at(),
+                patches_sent: message_queue.cursor(),
+            },
+            StatusCode::OK,
+        )
     }
 
     /// Handle WebSocket upgrade for real-time message streaming
@@ -112,6 +166,10 @@ impl ApiService {
             }
         };
 
+        // Read the client id before upgrading, since the upgrade consumes the
+        // request.
+        let query_client_id = parse_client_id(request.uri().query());
+
         // Upgrade the connection to WebSocket
         let (response, websocket) = match upgrade(request, None) {
             Ok(result) => result,
@@ -125,10 +183,25 @@ impl ApiService {
 
         let serve_session = Arc::clone(&self.serve_session);
 
+        // A client that handshook first passes its id back so the subscription
+        // attaches to that record. One that did not gets a fresh anonymous
+        // record, so an old plugin or a hand-rolled client still shows up as
+        // connected rather than being invisible in `roxo status`.
+        let client_id = query_client_id.unwrap_or_else(|| {
+            serve_session.clients().handshake(
+                ClientHandshake {
+                    client_name: Some("unknown".to_owned()),
+                    ..Default::default()
+                },
+                self.remote_addr.to_string(),
+            )
+        });
+
         // Spawn a task to handle the WebSocket connection
         tokio::spawn(async move {
             if let Err(e) =
-                handle_websocket_subscription(serve_session, websocket, input_cursor).await
+                handle_websocket_subscription(serve_session, websocket, input_cursor, client_id)
+                    .await
             {
                 log::error!("Error in websocket subscription: {}", e);
             }
@@ -485,13 +558,130 @@ fn pick_script_path(instance: InstanceWithMeta<'_>) -> Option<PathBuf> {
         .map(|path| path.to_owned())
 }
 
+/// Reads the client handshake out of a query string.
+///
+/// Every field is optional. A client that sends nothing still gets registered,
+/// just anonymously, because knowing that *something* connected is far more
+/// useful to an operator than rejecting the connection for being uninformative.
+fn parse_handshake(query: Option<&str>) -> ClientHandshake {
+    let mut handshake = ClientHandshake::default();
+
+    let query = match query {
+        Some(query) => query,
+        None => return handshake,
+    };
+
+    for pair in query.split('&') {
+        let (key, value) = match pair.split_once('=') {
+            Some(parts) => parts,
+            None => continue,
+        };
+
+        let value = percent_decode(value);
+
+        match key {
+            "placeId" => handshake.place_id = value.parse().ok(),
+            "gameId" => handshake.game_id = value.parse().ok(),
+            "client" => handshake.client_name = Some(value),
+            "clientVersion" => handshake.client_version = Some(value),
+            "autoConnected" => handshake.auto_connected = value == "true" || value == "1",
+            "matchReason" => handshake.match_reason = Some(value),
+            _ => {}
+        }
+    }
+
+    handshake
+}
+
+/// Reads a client id out of a query string, used to tie a change subscription
+/// back to the handshake that preceded it.
+fn parse_client_id(query: Option<&str>) -> Option<ClientId> {
+    query?.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+
+        if key == "clientId" {
+            value.parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Minimal percent-decoding for handshake values.
+///
+/// Handshake fields are numbers and short identifiers, so this only needs to
+/// handle the escaping a client might apply rather than be a general decoder.
+/// Malformed escapes are left as written instead of erroring, since a mangled
+/// client name should never fail a connection.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                match u8::from_str_radix(&value[index + 1..index + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Marks a client as subscribed for the lifetime of its websocket task.
+struct SubscriptionGuard {
+    serve_session: Arc<ServeSession>,
+    client_id: ClientId,
+}
+
+impl SubscriptionGuard {
+    fn new(serve_session: Arc<ServeSession>, client_id: ClientId) -> Self {
+        serve_session.clients().set_subscribed(client_id, true);
+
+        Self {
+            serve_session,
+            client_id,
+        }
+    }
+}
+
+impl Drop for SubscriptionGuard {
+    fn drop(&mut self) {
+        self.serve_session.clients().remove(self.client_id);
+    }
+}
+
 /// Handle WebSocket connection for streaming subscription messages
 async fn handle_websocket_subscription(
     serve_session: Arc<ServeSession>,
     websocket: HyperWebsocket,
     input_cursor: u32,
+    client_id: ClientId,
 ) -> anyhow::Result<()> {
     let mut websocket = websocket.await?;
+
+    // Mark the client live for as long as this task runs. The guard clears it
+    // on every exit path, including the error returns below, so a dropped
+    // connection can never leave a session looking connected forever.
+    let _subscription = SubscriptionGuard::new(Arc::clone(&serve_session), client_id);
 
     let session_id = serve_session.session_id();
     let tree_handle = serve_session.tree_handle();

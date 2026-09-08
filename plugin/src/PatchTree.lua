@@ -5,9 +5,9 @@
 
 local HttpService = game:GetService("HttpService")
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
+local Packages = Roxo.Packages
 
 local Log = require(Packages.Log)
 

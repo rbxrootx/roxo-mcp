@@ -27,11 +27,11 @@ end
 local function rejectWrongProtocolVersion(infoResponseBody)
 	if infoResponseBody.protocolVersion ~= Config.protocolVersion then
 		local message = (
-			"Found a Rojo dev server, but it's using a different protocol version, and is incompatible."
-			.. "\nMake sure you have matching versions of both the Rojo plugin and server!"
+			"Found a sync server, but it's using a different protocol version, and is incompatible."
+			.. "\nMake sure you have matching versions of both the Roxo plugin and server!"
 			.. "\n\nYour client is version %s, with protocol version %s. It expects server version %s."
 			.. "\nYour server is version %s, with protocol version %s."
-			.. "\n\nGo to https://github.com/rojo-rbx/rojo for more details."
+			.. "\n\nGo to https://github.com/paradoxum-games/Roxo for more details."
 		):format(
 			Version.display(Config.version),
 			Config.protocolVersion,
@@ -57,7 +57,7 @@ local function rejectWrongPlaceId(infoResponseBody)
 			end
 
 			local message = (
-				"Found a Rojo server, but its project is set to only be used with a specific list of places."
+				"Found a sync server, but its project is set to only be used with a specific list of places."
 				.. "\nYour place ID is %u, but needs to be one of these:"
 				.. "\n%s"
 				.. "\n\nTo change this list, edit 'servePlaceIds' in your .project.json file."
@@ -77,7 +77,7 @@ local function rejectWrongPlaceId(infoResponseBody)
 			end
 
 			local message = (
-				"Found a Rojo server, but its project is set to not be used with a specific list of places."
+				"Found a sync server, but its project is set to not be used with a specific list of places."
 				.. "\nYour place ID is %u, but needs to not be one of these:"
 				.. "\n%s"
 				.. "\n\nTo change this list, edit 'blockedPlaceIds' in your .project.json file."
@@ -93,7 +93,35 @@ end
 local ApiContext = {}
 ApiContext.__index = ApiContext
 
-function ApiContext.new(baseUrl)
+--[[
+	Builds the query string a client uses to identify itself to the server.
+
+	The server has no other way to know who attached, and without that a
+	developer looking at `roxo status` cannot tell a real Studio session from a
+	stray probe. Sent as query parameters rather than headers or a body because
+	this route is a plain GET that older servers already accept with none of
+	them: an upstream Rojo server ignores the extra parameters entirely.
+]]
+local function encodeHandshake(handshake)
+	if handshake == nil then
+		return ""
+	end
+
+	local parts = {}
+	for key, value in pairs(handshake) do
+		if value ~= nil then
+			table.insert(parts, string.format("%s=%s", key, HttpService:UrlEncode(tostring(value))))
+		end
+	end
+
+	if #parts == 0 then
+		return ""
+	end
+
+	return "?" .. table.concat(parts, "&")
+end
+
+function ApiContext.new(baseUrl, handshake)
 	assert(type(baseUrl) == "string", "baseUrl must be a string")
 
 	local self = {
@@ -103,6 +131,14 @@ function ApiContext.new(baseUrl)
 		__wsClient = nil,
 		__connected = true,
 		__activeRequests = {},
+		__handshake = handshake,
+		-- Assigned by the server during the handshake and echoed back when the
+		-- change subscription opens, so both requests are recognized as one
+		-- client rather than two.
+		__clientId = nil,
+		-- The last handshake response, kept so a caller can read the project's
+		-- identity without repeating the request.
+		__serverInfo = nil,
 	}
 
 	return setmetatable(self, ApiContext)
@@ -141,7 +177,7 @@ function ApiContext:setMessageCursor(index)
 end
 
 function ApiContext:connect()
-	local url = ("%s/api/rojo"):format(self.__baseUrl)
+	local url = ("%s/api/rojo%s"):format(self.__baseUrl, encodeHandshake(self.__handshake))
 
 	return Http.get(url)
 		:andThen(rejectFailedRequests)
@@ -155,6 +191,8 @@ function ApiContext:connect()
 		:andThen(rejectWrongPlaceId)
 		:andThen(function(body)
 			self.__sessionId = body.sessionId
+			self.__clientId = body.clientId
+			self.__serverInfo = body
 
 			return body
 		end)
@@ -220,6 +258,10 @@ end
 
 function ApiContext:connectWebSocket(packetHandlers)
 	local url = ("%s/api/socket/%s"):format(self.__baseUrl, self.__messageCursor)
+
+	if self.__clientId ~= nil then
+		url ..= ("?clientId=%d"):format(self.__clientId)
+	end
 	-- Convert HTTP/HTTPS URL to WS/WSS
 	url = url:gsub("^http://", "ws://"):gsub("^https://", "wss://")
 

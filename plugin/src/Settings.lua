@@ -3,8 +3,8 @@
 ]]
 
 local plugin = plugin or script:FindFirstAncestorWhichIsA("Plugin")
-local Rojo = script:FindFirstAncestor("Rojo")
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Packages = Roxo.Packages
 
 local Log = require(Packages.Log)
 local Roact = require(Packages.Roact)
@@ -13,6 +13,15 @@ local defaultSettings = {
 	openScriptsExternally = false,
 	twoWaySync = false,
 	autoReconnect = false,
+
+	-- Lets a serve session attach without a human pressing Connect, but only
+	-- when exactly one server proves it belongs to this place. This is what
+	-- makes Roxo usable from an AI agent, which can start a server but cannot
+	-- click a button in Studio.
+	autoConnect = true,
+	autoConnectPortRange = "34872-34881",
+	-- Places paired with a project by a previous connection, keyed by place ID.
+	pairedProjects = {},
 	showNotifications = true,
 	enableSyncFallback = true,
 	syncReminderMode = "Notify" :: "None" | "Notify" | "Fullscreen",
@@ -37,11 +46,22 @@ Settings._bindings = {}
 
 if plugin then
 	for name, defaultValue in pairs(Settings._values) do
-		local savedValue = plugin:GetSetting("Rojo_" .. name)
+		local savedValue = plugin:GetSetting("Roxo_" .. name)
+
+		-- Roxo is a drop-in replacement for Rojo, so someone installing it over
+		-- an existing Rojo setup should keep the preferences they already had
+		-- rather than silently reverting to defaults.
+		if savedValue == nil then
+			savedValue = plugin:GetSetting("Rojo_" .. name)
+
+			if savedValue ~= nil then
+				Log.trace("Migrated setting '{}' from Rojo", name)
+			end
+		end
 
 		if savedValue == nil then
 			-- plugin:SetSetting hits disc instead of memory, so it can be slow. Spawn so we don't hang.
-			task.spawn(plugin.SetSetting, plugin, "Rojo_" .. name, defaultValue)
+			task.spawn(plugin.SetSetting, plugin, "Roxo_" .. name, defaultValue)
 			Settings._values[name] = defaultValue
 		else
 			Settings._values[name] = savedValue
@@ -66,7 +86,7 @@ function Settings:set(name, value)
 
 	if plugin then
 		-- plugin:SetSetting hits disc instead of memory, so it can be slow. Spawn so we don't hang.
-		task.spawn(plugin.SetSetting, plugin, "Rojo_" .. name, value)
+		task.spawn(plugin.SetSetting, plugin, "Roxo_" .. name, value)
 	end
 
 	if self._updateListeners[name] then

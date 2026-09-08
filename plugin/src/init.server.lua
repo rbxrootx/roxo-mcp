@@ -2,8 +2,8 @@ if not plugin then
 	return
 end
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Packages = Roxo.Packages
 
 local Log = require(Packages.Log)
 local Roact = require(Packages.Roact)
@@ -19,7 +19,7 @@ end)
 local app = Roact.createElement(App, {
 	plugin = plugin,
 })
-local tree = Roact.mount(app, game:GetService("CoreGui"), "Rojo UI")
+local tree = Roact.mount(app, game:GetService("CoreGui"), "Roxo UI")
 
 plugin.Unloading:Connect(function()
 	Roact.unmount(tree)

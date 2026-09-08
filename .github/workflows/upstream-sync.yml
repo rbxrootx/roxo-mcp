@@ -1,0 +1,178 @@
+name: Upstream Sync
+
+# Roxo is a fork that intends to keep taking Rojo's changes indefinitely, so
+# falling behind is the default outcome unless something actively pulls. This
+# workflow does the pulling: it merges upstream into a branch, proves the result
+# still builds, and opens a pull request for a human to approve.
+#
+# It deliberately never pushes to the default branch. An automated merge that
+# lands unreviewed is how a fork silently loses its own changes.
+
+on:
+  schedule:
+    # Daily, early UTC, so a conflict is waiting at the start of the day rather
+    # than landing in the middle of one.
+    - cron: "0 6 * * *"
+
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to merge (defaults to master)"
+        required: false
+        default: "master"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: https://github.com/rojo-rbx/rojo.git
+  UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || 'master' }}
+
+jobs:
+  sync:
+    name: Merge upstream Rojo
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge needs real history on both sides, not a shallow clone.
+          fetch-depth: 0
+          submodules: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "roxo-upstream-bot"
+          git config user.email "actions@github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch upstream --tags
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          UPSTREAM_SHA="$(git rev-parse "upstream/$UPSTREAM_REF")"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_short=${UPSTREAM_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+          # An upstream commit already reachable from our default branch means a
+          # previous run merged it and there is nothing to do.
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream $UPSTREAM_REF."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream commits since our last merge:"
+            git log --oneline HEAD.."$UPSTREAM_SHA" | head -50
+          fi
+
+      - name: Skip if an open sync pull request already exists
+        id: existing
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Opening a second sync PR while the first is unresolved just produces
+          # two branches with the same conflicts to fix.
+          COUNT="$(gh pr list --state open --search "head:upstream-sync/" --json number --jq 'length')"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "An upstream sync pull request is already open; leaving it to be resolved first."
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream into a sync branch
+        id: merge
+        if: steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
+        run: |
+          BRANCH="upstream-sync/${{ steps.check.outputs.upstream_short }}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          git checkout -b "$BRANCH"
+
+          if git merge --no-edit "upstream/$UPSTREAM_REF"; then
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+
+            # Commit the conflicted tree rather than aborting. A branch a human
+            # can check out and finish is far more useful than a failed job with
+            # no artifact, and the marker guard below stops it merging as-is.
+            {
+              echo "Conflicting files:"
+              git diff --name-only --diff-filter=U
+            } | tee conflicts.txt
+
+            git add -A
+            git commit -m "Merge upstream Rojo ${{ steps.check.outputs.upstream_short }} (CONFLICTED)
+
+          This merge has unresolved conflicts and must not be merged as-is.
+          Resolve the conflicts on this branch, then push.
+
+          (AI-assisted)"
+          fi
+
+      - name: Verify the merged tree builds and tests
+        id: verify
+        if: steps.merge.outputs.conflicts == 'false'
+        continue-on-error: true
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo test --locked
+
+      - name: Push the sync branch
+        if: steps.merge.outcome == 'success' && steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
+        run: git push origin "${{ steps.merge.outputs.branch }}"
+
+      - name: Open a pull request
+        if: steps.merge.outcome == 'success' && steps.check.outputs.has_changes == 'true' && steps.existing.outputs.open == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMITS="$(git log --oneline "${{ github.sha }}..upstream/$UPSTREAM_REF" | head -40)"
+
+          if [ "${{ steps.merge.outputs.conflicts }}" = "true" ]; then
+            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }} (conflicts)"
+            STATUS="⚠️ **This merge has conflicts** and is opened as a draft. Check the branch out, resolve the conflicts, and push."
+            DRAFT="--draft"
+          elif [ "${{ steps.verify.outcome }}" = "success" ]; then
+            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }}"
+            STATUS="✅ Merged cleanly and \`cargo test\` passed."
+            DRAFT=""
+          else
+            TITLE="[🤖] Upstream sync ${{ steps.check.outputs.upstream_short }} (tests failing)"
+            STATUS="⚠️ Merged cleanly but \`cargo test\` failed. Roxo's changes likely need updating for an upstream change."
+            DRAFT="--draft"
+          fi
+
+          BODY=$(cat <<EOF
+          Merges \`rojo-rbx/rojo@$UPSTREAM_REF\` (\`${{ steps.check.outputs.upstream_short }}\`) into \`${{ github.ref_name }}\`.
+
+          $STATUS
+
+          ### Upstream commits
+
+          \`\`\`
+          $COMMITS
+          \`\`\`
+
+          ### Before merging
+
+          - Check that Roxo's additions still behave: auto-connect discovery, the client registry, \`/api/roxo/status\`, and the MCP server.
+          - If upstream changed \`ServerInfoResponse\` or the protocol version, confirm the plugin's handshake still round-trips.
+
+          [🤖] AI was used to create this pull request body.
+          EOF
+          )
+
+          gh pr create \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --base "${{ github.ref_name }}" \
+            --head "${{ steps.merge.outputs.branch }}" \
+            $DRAFT

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rbx_dom_weak::types::Ref;
 use serde::Serialize;
 
-use librojo::web_api::{
+use libroxo::web_api::{
     Instance, InstanceUpdate, MessagesPacket, ReadResponse, SocketPacket, SocketPacketBody,
 };
 use rojo_insta_ext::RedactionMap;

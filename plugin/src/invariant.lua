@@ -18,8 +18,8 @@ else
 		local fullMessage = string.format(
 			"Rojo detected an invariant violation within itself:\n"
 				.. "%s\n\n"
-				.. "This is a bug in Rojo. Please file an issue:\n"
-				.. "https://github.com/rojo-rbx/rojo/issues",
+				.. "This is a bug in Roxo. Please file an issue:\n"
+				.. "https://github.com/paradoxum-games/Roxo/issues",
 			message
 		)
 

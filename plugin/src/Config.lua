@@ -24,4 +24,16 @@ return strict("Config", {
 	protocolVersion = 5,
 	defaultHost = "localhost",
 	defaultPort = "34872",
+
+	-- The span of ports auto-connect looks at when hunting for a server. Ten
+	-- is enough for the handful of projects anyone serves at once, and small
+	-- enough that repeated polling stays well inside Studio's HTTP limits.
+	defaultPortRange = { min = 34872, max = 34881 },
+	maxPortRangeSize = 32,
+
+	-- Discovery starts eager, because the common case is an agent that just
+	-- started a server and is waiting on the connection, then backs off so an
+	-- editor left open for hours is not polling at full rate.
+	autoConnectInitialInterval = 2,
+	autoConnectMaxInterval = 15,
 })

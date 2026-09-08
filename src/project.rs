@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    glob::IgnorableGlob, json, resolution::UnresolvedValue, snapshot::SyncRule,
-    syncback::SyncbackRules,
+    auto_connect::AutoConnectPolicy, glob::IgnorableGlob, json, resolution::UnresolvedValue,
+    snapshot::SyncRule, syncback::SyncbackRules,
 };
 
 /// Represents 'default' project names that act as `init` files
@@ -74,6 +74,24 @@ pub struct Project {
     /// using this project for live sync.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serve_port: Option<u16>,
+
+    /// A stable identifier for this project, used to pair a Roblox place with
+    /// the project it belongs to so that Roxo's auto-connect can recognize it
+    /// later without a human confirming.
+    ///
+    /// When absent, Roxo derives one from the project file's path. Set this
+    /// explicitly if the project is checked out at different paths on different
+    /// machines and you want pairings to follow it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+
+    /// Whether the Studio plugin may connect to this project's serve session
+    /// without a human pressing Connect, and how strong a match it must have
+    /// before doing so.
+    ///
+    /// Accepts `"off"`, `"matching"` (the default), `"always"`, or a boolean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<AutoConnectPolicy>,
 
     /// If specified, contains the set of place IDs that this project is
     /// compatible with when doing live sync.

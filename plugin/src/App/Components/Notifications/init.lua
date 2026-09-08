@@ -1,6 +1,6 @@
-local Rojo = script:FindFirstAncestor("Rojo")
+local Roxo = script:FindFirstAncestor("Roxo")
 
-local Packages = Rojo.Packages
+local Packages = Roxo.Packages
 local Roact = require(Packages.Roact)
 
 local e = Roact.createElement

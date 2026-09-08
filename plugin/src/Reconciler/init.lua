@@ -3,8 +3,8 @@
 	and mutating the Roblox DOM.
 ]]
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
 
 local Timer = require(Plugin.Timer)
 
