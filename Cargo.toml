@@ -16,6 +16,11 @@ readme = "README.md"
 edition = "2021"
 build = "build.rs"
 
+# Roxo ships two binaries with identical behaviour, so `cargo run` cannot pick
+# one on its own. Naming the default keeps plain `cargo run` working for anyone
+# in the repo rather than making every invocation pass --bin.
+default-run = "roxo"
+
 exclude = ["/test-projects/**"]
 
 [profile.dev]
