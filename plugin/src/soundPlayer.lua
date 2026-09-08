@@ -7,7 +7,7 @@ if plugin then
 		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, true, 10, 10, 10, 10)
 	)
 	widget.Name = "Rojo_soundPlayer"
-	widget.Title = "Rojo Sound Player"
+	widget.Title = "Roxo Sound Player"
 end
 
 local SoundPlayer = {}

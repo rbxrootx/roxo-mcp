@@ -2,12 +2,22 @@
 source: tests/tests/serve.rs
 expression: redactions.redacted_yaml(info)
 ---
+autoConnect: matching
+capabilities:
+  - auto-connect
+  - status
+  - client-registry
+  - sessions
+clientId: 1
 expectedPlaceIds: ~
 gameId: ~
 placeId: ~
+projectId: "[project-id]"
 projectName: remove_file
+projectPath: "[project-path]"
 protocolVersion: 5
 rootInstanceId: id-2
+serverName: roxo
 serverVersion: "[server-version]"
 sessionId: id-1
 unexpectedPlaceIds: ~

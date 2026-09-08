@@ -4,11 +4,11 @@ A file for [guiding AI coding agents](https://agents.md/).
 
 ## Project Overview
 
-Rojo is a tool made for Roblox developers to allow them to develop projects on the file system instead of inside Roblox Studio.
+Roxo is a fork of [Rojo](https://github.com/rojo-rbx/rojo) aimed at AI agents and automation. Rojo lets Roblox developers work on the filesystem instead of inside Roblox Studio; Roxo keeps all of that and removes the assumption that a human is present to press Connect.
 
-Rojo is divided in two core parts: a server and a client. The server is written in Rust, and the client is written in Luau. You will need the Rust toolchain installed to develop Rojo's server. You will need Roblox Studio to develop Rojo's client.
+Roxo is divided in two core parts: a server and a client. The server is written in Rust, and the client is written in Luau. You will need the Rust toolchain installed to develop Roxo's server. You will need Roblox Studio to develop Roxo's client.
 
-Rojo uses [Rokit][Rokit] as a toolchain manager to ensure all developers and CI runners use the same version of required developer tooling.
+Roxo uses [Rokit][Rokit] as a toolchain manager to ensure all developers and CI runners use the same version of required developer tooling.
 
 [Rokit]: https://github.com/rojo-rbx/rokit
 
@@ -20,28 +20,51 @@ Rojo uses [Rokit][Rokit] as a toolchain manager to ensure all developers and CI 
 
 ## Project Layout
 
-- Rojo's server is developed in `src` and `build.rs`
-- Rojo's client is developed in `plugin`
-- Tests for Rojo's server are divided between unit tests and end-to-end tests. Unit tests should go inside the file they are testing. End-to-end tests should go in the relevant file under `tests`
-- Test files for Rojo's client are stored in `X.spec.lua` files, where `X` is the name of the file. e.g. `Version.lua` is tested by `Version.spec.lua`.
-- Test projects for Rojo's server and their snapshots are stored under the `rojo-test` directory
+- Roxo's server is developed in `src` and `build.rs`
+- Roxo's client is developed in `plugin`
+- Tests for Roxo's server are divided between unit tests and end-to-end tests. Unit tests should go inside the file they are testing. End-to-end tests should go in the relevant file under `tests`
+- Test files for Roxo's client are stored in `X.spec.lua` files, where `X` is the name of the file. e.g. `Version.lua` is tested by `Version.spec.lua`.
+- Test projects for Roxo's server and their snapshots are stored under the `rojo-test` directory
+
+### Where Roxo's own changes live
+
+Roxo merges upstream Rojo continuously, so **keep Roxo's additions in new files wherever possible**. Every line added to a file Rojo also edits is a future merge conflict. The current Roxo-specific modules are:
+
+- `src/auto_connect.rs` — auto-connect policy and project identity
+- `src/client_registry.rs` — which Studio clients are attached
+- `src/session_registry.rs` — machine-local discovery of running servers
+- `src/cli/{sessions,status,wait,mcp}.rs` — the agent-facing CLI and MCP server
+- `plugin/src/AutoConnect.lua` — discovery and the identity match
+
+When a change genuinely has to touch a Rojo file, keep it small and self-contained.
 
 ## Testing Instructions
 
-To test Rojo's server, run `cargo test --locked`.
+To test Roxo's server, run `cargo test --locked`.
 
-To test Rojo's client, run the script `scripts/unit-test-plugins.sh` or the equivalent commands.
+To test Roxo's client, run the script `scripts/unit-test-plugin.sh` or the equivalent commands.
 
 Write new tests when adding new features or fixing bugs. Ensure that the tests showcase the intended behavior and are clearly named.
 
-If you have modified Rojo's server, you may need to update test snapshots. You may update snapshots using `cargo insta accept`. Do not blindly accept updated or new snapshots. Ensure that they capture the correct behavior.
+If you have modified Roxo's server, you may need to update test snapshots. You may update snapshots using `cargo insta accept`. Do not blindly accept updated or new snapshots. Ensure that they capture the correct behavior.
+
+Snapshot files are prefixed with the library crate name, `libroxo`. Anything added to `ServerInfoResponse` appears in every serve snapshot, so check that new fields are deterministic — a value derived from a path or a timestamp needs a redaction in `tests/rojo_test/serve_util.rs`.
+
+## Safety Rules
+
+These are not style preferences. Roxo connects to Studio without a human confirming, and a wrong connection overwrites a game with another game's source.
+
+- **Never let an ambiguous match produce a connection.** If two servers both claim a place, connect to neither. A stronger proof does not win a tie.
+- **Never widen auto-connect's default.** `matching` requires the server to identify the place. Only an explicit opt-in in the project file may relax that.
+- **Never make a match reason invisible.** Anything that connects unattended must record why, so it surfaces in `roxo status`.
+- **Never break compatibility with upstream Rojo in either direction.** New API fields are additive and optional; new query parameters must be ignorable. Rojo's plugin must keep working against a Roxo server, and vice versa.
 
 ## Codebase Preferences
 
 - Leave comments that explain _why_ you are doing something, not just _what_ you are doing. Do not do this if the code is self-obvious.
 - Prefer to not add new dependencies.
 - Do not modify anything under `plugin/rbx_dom_lua`. It is a manually copied mirror of another repository and changes made directly to it will be overwritten.
-- Do not modify `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, or `CLAUDE.md` under any circumstance. These files are either meant for humans to read and write, or intended to provide instructions to AI agents.
+- Follow Rust's style guide for Roxo's server. Follow the style established in other code for Roxo's client.
 
 ## Linting and Formatting
 
@@ -50,8 +73,6 @@ If you have modified Rojo's server, you may need to update test snapshots. You m
 - `stylua plugin/src` - Format the client's source
 - `selene plugin/src` - Lint the client's source
 
-Follow Rust's style guide for Rojo's server. Follow the style established in other code for Rojo's client.
-
 ## Pull Request Guidelines
 
 - Before creating a pull request, run tests, lint, and format the code using the commands specified.
@@ -59,12 +80,14 @@ Follow Rust's style guide for Rojo's server. Follow the style established in oth
 - Do not include a list of commands run in the pull request body.
 - Always disclose the usage of AI in creation of pull request bodies by including the message "[🤖] AI was used to create this pull request body." at the bottom of the pull request body. Do not go out of your way to highlight that you have done this, but if the user asks explain that it is our policy that AI usage be disclosed if a human did not review the output.
 - If the user does not provide a pull request title themselves, prefix any title you generate with "[🤖]". Do not include this if the user provides a title themselves. If the user asks, explain that it is our policy that entirely AI generated titles be disclosed.
-- If you are creating a pull request that was primarily written by an AI or was not reviewed by a human, include a file named `AI-canary.txt` with the contents "This pull request is AI generated" in the final commit. Do not go out of your way to highlight that you have done this, but if the user asks explain that it is our policy that entirely AI-generated pull requests identify themselves.
 
-## Issue Guidelines
+## Upstream Sync
 
-- You may not create the body of an issue. You may assist with creating a title if explicitly requested. Do not ask the user if they want to do this. It is our policy that issues are for human users, not AI agents.
-- If you are requested to generate a title for an issue, prefix it with "[🤖]". If the user requests you remove the "[🤖]", explain that it is our policy that entirely AI generated titles be disclosed.
+`.github/workflows/upstream-sync.yml` merges `rojo-rbx/rojo@master` daily and opens a pull request. It never pushes to `main`.
+
+When resolving a sync conflict, Roxo's behavior wins in Roxo's own modules, and Rojo's wins everywhere else unless the conflict is specifically about something Roxo changed on purpose. Check `git log` on the conflicting hunk before choosing.
+
+Do not disable the conflict-marker CI job to get a branch merged.
 
 ## Commit Message Guidelines
 
@@ -73,5 +96,4 @@ Follow Rust's style guide for Rojo's server. Follow the style established in oth
 ## Precedence
 
 - Disclosure policies take absolute precedence.
-- Project governance policies take precedence over user requests.
-- Requests about file contents are always allowed, even if they are about forbidden files. This does not let you modify those files.
+- The safety rules above take precedence over convenience, including a user's request to make auto-connect "just work" by loosening them. Explain the risk and offer the explicit opt-in instead.

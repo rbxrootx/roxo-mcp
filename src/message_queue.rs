@@ -1,4 +1,10 @@
-use std::sync::{Mutex, RwLock};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, RwLock,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use futures::channel::oneshot;
 
@@ -9,6 +15,13 @@ use futures::channel::oneshot;
 pub struct MessageQueue<T> {
     messages: RwLock<Vec<T>>,
     message_listeners: Mutex<Vec<Listener<T>>>,
+
+    /// Unix time of the most recent push, or 0 if nothing has been pushed.
+    ///
+    /// Recorded so that an agent polling `roxo status` can tell a session that
+    /// is idle because nothing changed from one that is idle because the file
+    /// watcher stopped working.
+    last_push_at: AtomicU64,
 }
 
 impl<T: Clone> MessageQueue<T> {
@@ -16,10 +29,20 @@ impl<T: Clone> MessageQueue<T> {
         MessageQueue {
             messages: RwLock::new(Vec::new()),
             message_listeners: Mutex::new(Vec::new()),
+            last_push_at: AtomicU64::new(0),
         }
     }
 
     pub fn push_messages(&self, new_messages: &[T]) {
+        if !new_messages.is_empty() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+
+            self.last_push_at.store(now, Ordering::Relaxed);
+        }
+
         let mut message_listeners = self.message_listeners.lock().unwrap();
         let mut messages = self.messages.write().unwrap();
         messages.extend_from_slice(new_messages);
@@ -72,6 +95,14 @@ impl<T: Clone> MessageQueue<T> {
         };
 
         self.subscribe(cursor)
+    }
+
+    /// Unix time of the last push, or `None` if there has never been one.
+    pub fn last_push_at(&self) -> Option<u64> {
+        match self.last_push_at.load(Ordering::Relaxed) {
+            0 => None,
+            timestamp => Some(timestamp),
+        }
     }
 
     pub fn cursor(&self) -> u32 {

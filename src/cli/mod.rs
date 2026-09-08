@@ -4,11 +4,15 @@ mod build;
 mod doc;
 mod fmt_project;
 mod init;
+mod mcp;
 mod plugin;
 mod serve;
+mod sessions;
 mod sourcemap;
+mod status;
 mod syncback;
 mod upload;
+mod wait;
 
 use std::{borrow::Cow, env, path::Path, str::FromStr};
 
@@ -20,15 +24,19 @@ pub use self::build::BuildCommand;
 pub use self::doc::DocCommand;
 pub use self::fmt_project::FmtProjectCommand;
 pub use self::init::{InitCommand, InitKind};
+pub use self::mcp::McpCommand;
 pub use self::plugin::{PluginCommand, PluginSubcommand};
 pub use self::serve::ServeCommand;
+pub use self::sessions::SessionsCommand;
 pub use self::sourcemap::SourcemapCommand;
+pub use self::status::StatusCommand;
 pub use self::syncback::SyncbackCommand;
 pub use self::upload::UploadCommand;
+pub use self::wait::{WaitCommand, WaitCondition};
 
 /// Command line options that Rojo accepts, defined using the clap crate.
 #[derive(Debug, Parser)]
-#[clap(name = "Rojo", version, about)]
+#[clap(name = "Roxo", version, about)]
 pub struct Options {
     #[clap(flatten)]
     pub global: GlobalOptions,
@@ -50,6 +58,10 @@ impl Options {
             Subcommand::Doc(subcommand) => subcommand.run(),
             Subcommand::Plugin(subcommand) => subcommand.run(),
             Subcommand::Syncback(subcommand) => subcommand.run(self.global),
+            Subcommand::Sessions(subcommand) => subcommand.run(self.global),
+            Subcommand::Status(subcommand) => subcommand.run(self.global),
+            Subcommand::Wait(subcommand) => subcommand.run(self.global),
+            Subcommand::Mcp(subcommand) => subcommand.run(self.global),
         }
     }
 }
@@ -124,6 +136,10 @@ pub enum Subcommand {
     Doc(DocCommand),
     Plugin(PluginCommand),
     Syncback(SyncbackCommand),
+    Sessions(SessionsCommand),
+    Status(StatusCommand),
+    Wait(WaitCommand),
+    Mcp(McpCommand),
 }
 
 pub(super) fn resolve_path(path: &Path) -> anyhow::Result<Cow<'_, Path>> {

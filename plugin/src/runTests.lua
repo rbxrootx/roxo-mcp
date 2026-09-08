@@ -1,6 +1,6 @@
 return function(TestEZ)
-	local Rojo = script.Parent.Parent
-	local Packages = Rojo.Packages
+	local Roxo = script.Parent.Parent
+	local Packages = Roxo.Packages
 
-	TestEZ.TestBootstrap:run({ Rojo.Plugin, Packages.Http, Packages.Log, Packages.RbxDom })
+	TestEZ.TestBootstrap:run({ Roxo.Plugin, Packages.Http, Packages.Log, Packages.RbxDom })
 end

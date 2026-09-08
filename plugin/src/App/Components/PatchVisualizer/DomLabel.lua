@@ -1,8 +1,8 @@
 local SelectionService = game:GetService("Selection")
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
+local Packages = Roxo.Packages
 
 local Roact = require(Packages.Roact)
 local Flipper = require(Packages.Flipper)

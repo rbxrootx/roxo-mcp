@@ -41,6 +41,15 @@ local ApiInfoResponse = t.interface({
 	protocolVersion = t.number,
 	expectedPlaceIds = t.optional(t.array(t.number)),
 	rootInstanceId = RbxId,
+
+	-- Roxo additions. All optional, because an upstream Rojo server does not
+	-- send them and must still validate.
+	serverName = t.optional(t.string),
+	projectId = t.optional(t.string),
+	autoConnect = t.optional(t.string),
+	projectPath = t.optional(t.string),
+	capabilities = t.optional(t.array(t.string)),
+	clientId = t.optional(t.number),
 })
 
 local ApiReadResponse = t.interface({

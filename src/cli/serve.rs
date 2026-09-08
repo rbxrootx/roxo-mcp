@@ -9,7 +9,12 @@ use clap::Parser;
 use memofs::Vfs;
 use termcolor::{BufferWriter, Color, ColorChoice, ColorSpec, WriteColor};
 
-use crate::{serve_session::ServeSession, web::LiveServer};
+use crate::{
+    auto_connect::AutoConnectPolicy,
+    serve_session::ServeSession,
+    session_registry::{self, SessionBeacon},
+    web::LiveServer,
+};
 
 use super::{resolve_path, GlobalOptions};
 
@@ -39,6 +44,23 @@ pub struct ServeCommand {
     /// validation for binds where it is otherwise off (such as `0.0.0.0`).
     #[clap(long, value_delimiter = ',')]
     pub allowed_hosts: Vec<String>,
+
+    /// Override the project's auto-connect policy for this run. Valid values
+    /// are `off`, `matching`, and `always`.
+    ///
+    /// `matching` lets the Studio plugin connect on its own, but only from a
+    /// place that this project proves it belongs to. `always` drops that proof
+    /// requirement and should only be used for unpublished places, which have
+    /// no place ID to match against.
+    #[clap(long, value_name = "POLICY")]
+    pub auto_connect: Option<AutoConnectPolicy>,
+
+    /// Do not advertise this session in the machine-local session registry.
+    ///
+    /// The registry is how `roxo sessions`, `roxo status`, and the MCP server
+    /// find running servers without scanning ports.
+    #[clap(long)]
+    pub no_registry: bool,
 }
 
 impl ServeCommand {
@@ -47,7 +69,9 @@ impl ServeCommand {
 
         let vfs = Vfs::new_default()?;
 
-        let session = Arc::new(ServeSession::new(vfs, project_path)?);
+        let mut session = ServeSession::new(vfs, project_path)?;
+        session.set_auto_connect_override(self.auto_connect);
+        let session = Arc::new(session);
 
         let ip = self
             .address
@@ -67,17 +91,69 @@ impl ServeCommand {
             self.allowed_hosts
         };
 
+        // Held until the server stops so that the beacon is removed on exit
+        // and agents are never pointed at a port nothing is listening on.
+        let _beacon = if self.no_registry {
+            None
+        } else {
+            match publish_beacon(&session, ip, port) {
+                Ok(guard) => Some(guard),
+                Err(err) => {
+                    // Discovery is a convenience. A read-only home directory
+                    // should degrade to "you must pass --port" rather than
+                    // refuse to serve at all.
+                    log::warn!("Could not advertise this session for discovery: {err:#}");
+                    None
+                }
+            }
+        };
+
+        let auto_connect = session.auto_connect();
         let server = LiveServer::new(session);
 
         server.start((ip, port).into(), allowed_hosts, || {
-            let _ = show_start_message(ip, port, global.color.into());
+            let _ = show_start_message(ip, port, auto_connect, global.color.into());
         })?;
 
         Ok(())
     }
 }
 
-fn show_start_message(bind_address: IpAddr, port: u16, color: ColorChoice) -> io::Result<()> {
+fn publish_beacon(
+    session: &ServeSession,
+    address: IpAddr,
+    port: u16,
+) -> anyhow::Result<session_registry::BeaconGuard> {
+    let beacon = SessionBeacon {
+        session_id: session.session_id(),
+        pid: std::process::id(),
+        address: address.to_string(),
+        port,
+        project_name: session.project_name().to_owned(),
+        project_id: session.project_id().to_owned(),
+        project_path: session.project_path().to_path_buf(),
+        place_id: session.place_id(),
+        game_id: session.game_id(),
+        serve_place_ids: session
+            .serve_place_ids()
+            .map(|ids| ids.iter().copied().collect()),
+        auto_connect: session.auto_connect().as_str().to_owned(),
+        server_version: env!("CARGO_PKG_VERSION").to_owned(),
+        started_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0),
+    };
+
+    session_registry::publish(&beacon)
+}
+
+fn show_start_message(
+    bind_address: IpAddr,
+    port: u16,
+    auto_connect: AutoConnectPolicy,
+    color: ColorChoice,
+) -> io::Result<()> {
     let mut green = ColorSpec::new();
     green.set_fg(Some(Color::Green)).set_bold(true);
 
@@ -90,7 +166,7 @@ fn show_start_message(bind_address: IpAddr, port: u16, color: ColorChoice) -> io
         bind_address.to_string()
     };
 
-    writeln!(&mut buffer, "Rojo server listening:")?;
+    writeln!(&mut buffer, "Roxo server listening:")?;
 
     write!(&mut buffer, "  Address: ")?;
     buffer.set_color(&green)?;
@@ -100,6 +176,12 @@ fn show_start_message(bind_address: IpAddr, port: u16, color: ColorChoice) -> io
     write!(&mut buffer, "  Port:    ")?;
     buffer.set_color(&green)?;
     writeln!(&mut buffer, "{}", port)?;
+
+    buffer.set_color(&ColorSpec::new())?;
+    write!(&mut buffer, "  Connect: ")?;
+    buffer.set_color(&green)?;
+    writeln!(&mut buffer, "{}", auto_connect_description(auto_connect))?;
+    buffer.set_color(&ColorSpec::new())?;
 
     writeln!(&mut buffer)?;
 
@@ -134,4 +216,12 @@ fn show_start_message(bind_address: IpAddr, port: u16, color: ColorChoice) -> io
     writer.print(&buffer)?;
 
     Ok(())
+}
+
+fn auto_connect_description(policy: AutoConnectPolicy) -> &'static str {
+    match policy {
+        AutoConnectPolicy::Off => "manual (press Connect in Studio)",
+        AutoConnectPolicy::Matching => "automatic for places this project matches",
+        AutoConnectPolicy::Always => "automatic from any place",
+    }
 }

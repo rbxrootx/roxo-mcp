@@ -1,45 +1,274 @@
 <div align="center">
-    <a href="https://rojo.space"><img src="assets/brand_images/logo-512.png" alt="Rojo" height="217" /></a>
-</div>
-
-<div>&nbsp;</div>
-
-<div align="center">
-    <a href="https://github.com/rojo-rbx/rojo/actions"><img src="https://github.com/rojo-rbx/rojo/workflows/CI/badge.svg" alt="Actions status" /></a>
-    <a href="https://crates.io/crates/rojo"><img src="https://img.shields.io/crates/v/rojo.svg?label=latest%20release" alt="Latest server version" /></a>
-    <a href="https://rojo.space/docs"><img src="https://img.shields.io/badge/docs-website-brightgreen.svg" alt="Rojo Documentation" /></a>
+    <h1>Roxo</h1>
+    <p><strong>Rojo, with the human taken off the critical path.</strong></p>
 </div>
 
 <hr />
 
-**Rojo** is a tool designed to enable Roblox developers to use professional-grade software engineering tools.
+**Roxo** is a fork of [Rojo](https://github.com/rojo-rbx/rojo) built for AI agents and automation.
 
-With Rojo, it's possible to use industry-leading tools like **Visual Studio Code** and **Git**.
+Rojo is excellent at what it does, but it assumes a person is sitting in Roblox Studio. Its serve session does nothing until someone opens the plugin and presses **Connect**, and the server never reports whether that ever happened. An agent can start `rojo serve`, write files all day, and have no idea that not a single change reached Studio.
 
-Rojo is designed for power users who want to use the best tools available for building games, libraries, and plugins.
+Roxo closes that gap. It keeps everything Rojo does and adds the pieces an unattended workflow needs:
 
-## Features
-Rojo enables:
+* **Auto-connect** — the plugin finds a running server and attaches on its own, with a safety gate that makes syncing the wrong project into the wrong place effectively impossible.
+* **Observability** — `roxo status` answers "is Studio actually connected?", so automation can stop guessing.
+* **Discovery** — `roxo sessions` lists what's running, with no port scanning.
+* **MCP** — `roxo mcp` exposes all of it to agents natively.
 
-* Working on scripts and models from the filesystem, in your favorite editor
-* Versioning your game, library, or plugin using Git or another VCS
-* Streaming `rbxmx` and `rbxm` models into your game in real time
-* Packaging and deploying your project to Roblox.com from the command line
-* Pulling Instances from Roblox place and model files back into an existing Rojo project with `rojo syncback`
+Roxo is a **drop-in replacement**. Same `.project.json` format, same default port, same protocol version. It installs as both `roxo` and `rojo`, so existing scripts, Rokit manifests, and editor extensions keep working untouched.
 
-Rojo also has an optional two-way sync setting in the Studio plugin for syncing supported Studio edits back to the filesystem.
+## Contents
 
-Some workflows, like fully automatic conversion of every existing game into a Rojo project, are still limited and may require manual project configuration.
+- [Install](#install)
+- [Auto-connect](#auto-connect)
+- [Agent workflow](#agent-workflow)
+- [CLI additions](#cli-additions)
+- [MCP server](#mcp-server)
+- [HTTP API additions](#http-api-additions)
+- [Project file additions](#project-file-additions)
+- [Staying current with Rojo](#staying-current-with-rojo)
 
-## [Documentation](https://rojo.space/docs)
-Documentation is hosted in the [rojo.space repository](https://github.com/rojo-rbx/rojo.space).
+## Install
 
-## Contributing
-Check out our [contribution guide](CONTRIBUTING.md) for detailed instructions for helping work on Rojo!
+```sh
+cargo install --git https://github.com/paradoxum-games/Roxo roxo
+roxo plugin install
+```
 
-Pull requests are welcome!
+`roxo plugin install` writes the Studio plugin to the same file Rojo uses, so installing Roxo **replaces** Rojo's managed plugin rather than leaving two plugins fighting over the same place. That is deliberate — running both at once is exactly the failure Roxo's safety gate exists to prevent.
 
-Rojo supports Rust 1.88 and newer. The minimum supported version of Rust is based on the latest versions of the dependencies that Rojo has.
+## Auto-connect
+
+This is the reason Roxo exists. The plugin looks for a serve session and connects without anyone pressing a button.
+
+Removing the button naively would be worse than the problem it solves: a plugin that attaches to whatever server it finds will cheerfully overwrite one game with another game's source. So the rule is that the **server has to prove it belongs to this place**, and the proof has to be unambiguous.
+
+### How a server proves itself
+
+Checked strongest first. Any one of these qualifies a server as a candidate:
+
+| Proof | How it's established |
+| --- | --- |
+| `servePlaceIds` | The project lists this place's ID |
+| `gameId` | The project's `gameId` matches this place's universe |
+| Paired | A human connected this place to this project before, matched on project identity — not name |
+| Declared | The project opted in with `"autoConnect": "always"` |
+
+A server is disqualified outright if the place appears in `blockedPlaceIds`, if `servePlaceIds` exists and doesn't list the place, if the project sets `"autoConnect": "off"`, or if the protocol version doesn't match.
+
+### The ambiguity rule
+
+```
+scan 34872..34881
+  :34872  "MyGame"  servePlaceIds [123]  <- game.PlaceId = 123   MATCH
+  :34873  "Other"   servePlaceIds [999]                          no match
+
+exactly 1 candidate  ->  connect
+0 candidates         ->  stay idle, keep looking
+2+ candidates        ->  notify, connect nothing
+```
+
+**Two candidates never resolve to a connection, no matter how strong their claims are.** A stronger proof does not win a tie. Two projects claiming one place is a misconfiguration, and a wrong sync costs far more to undo than a prompt costs to answer.
+
+### Pairing
+
+A project that doesn't list its place IDs still gets auto-connect after one manual connection. Connecting by hand records a pairing between the place and the project's **identity** — a stable ID derived from the project file's path, or set explicitly with `projectId`. Every connection after the first is automatic.
+
+Pairing keys on identity rather than name because "Game" is not a distinguishing label, and because a project file in a repository should not be able to claim someone else's pairing.
+
+### Unpublished places
+
+An unpublished place reports `PlaceId` of 0. There is nothing to match against, so strict matching cannot apply. Two ways forward:
+
+* Connect once by hand to pair the place with the project, or
+* Set `"autoConnect": "always"` in the project file.
+
+`always` is a statement that the machine is trusted. It is the only mode where a server will accept a place it cannot identify.
+
+### Confirmation
+
+Auto-connected sessions skip the patch confirmation dialog. They have to — the case auto-connect exists for is precisely the one where nobody is present to answer a prompt.
+
+This is safe only because reaching that point required either an identity proof or an explicit opt-in in the project file; either way a human already decided the two belong together. The decision is never invisible: the match reason is sent to the server and shows up in `roxo status`.
+
+### Settings
+
+In the Studio plugin, under Settings:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Auto Connect** | on | Connect automatically to a server that proves it belongs to this place |
+| **Auto Connect Ports** | `34872-34881` | The range searched when looking for a server |
+
+Discovery polls while the place is not syncing, starting every 2 seconds and backing off to 15, so a server started *after* Studio is already open still gets picked up. That last part matters: it's the case Rojo's one-shot reconnect misses, and it's the normal case for an agent.
+
+Turn auto-connect off and Roxo behaves exactly like Rojo.
+
+## Agent workflow
+
+The shape of a reliable unattended sync:
+
+```sh
+# Start a server. Not the same thing as being connected.
+roxo serve ./my-game --port 34872 &
+
+# Block until Studio actually attaches. This is the step that makes the
+# difference between a real sync and writing into the void.
+roxo wait --for studio --timeout 120
+
+# Now file changes are reaching Studio. Do the work.
+echo 'print("hello")' > src/init.server.luau
+
+# Confirm, and fail loudly if the connection dropped.
+roxo status --require-studio
+```
+
+`roxo status --json` gives an agent everything it needs to branch on:
+
+```json
+{
+  "projectName": "MyGame",
+  "projectId": "roxo-59ab89ed34cb7943",
+  "studioConnected": true,
+  "clientCount": 1,
+  "clients": [
+    {
+      "clientName": "roxo-plugin",
+      "placeId": 123456789,
+      "autoConnected": true,
+      "matchReason": "servePlaceIds",
+      "subscribed": true
+    }
+  ],
+  "patchesSent": 12,
+  "lastPatchAt": 1757352901
+}
+```
+
+`studioConnected` is the field to branch on. It means a client holds a **live change subscription**, not merely that something once looked at the server. A handshake alone doesn't count.
+
+## CLI additions
+
+Everything Rojo has, plus:
+
+| Command | Purpose |
+| --- | --- |
+| `roxo sessions` | List running serve sessions on this machine |
+| `roxo status` | Report a session's state and whether Studio is attached |
+| `roxo wait --for studio` | Block until Studio connects, or time out |
+| `roxo mcp` | Serve Roxo's tools to an agent over MCP |
+
+Plus new flags on `serve`:
+
+| Flag | Purpose |
+| --- | --- |
+| `--auto-connect <off\|matching\|always>` | Override the project's policy for one run |
+| `--no-registry` | Don't advertise this session for discovery |
+
+`sessions`, `status`, and `wait` all accept `--port` or `--project` to pick a session, and `--json` for machine-readable output. When several sessions are running and none is named, they report the ambiguity rather than guessing — pointing an agent's writes at whichever project sorted first is the exact failure this all exists to avoid.
+
+### Discovery without port scanning
+
+Each `roxo serve` drops a JSON beacon in `~/.roxo/sessions/` and removes it on exit. Stale beacons — from a server killed with a signal, where cleanup never ran — are pruned by process ID when the directory is listed, so discovery never points at a dead port. Set `ROXO_HOME` to relocate the directory.
+
+The Studio plugin can't read files, so it still scans ports. Everything that *can* read files uses the registry.
+
+## MCP server
+
+```sh
+roxo mcp
+```
+
+Speaks JSON-RPC over stdin/stdout. All logging goes to stderr so it can't corrupt the protocol stream.
+
+| Tool | Purpose |
+| --- | --- |
+| `roxo_sessions` | List running serve sessions |
+| `roxo_status` | Session state, including whether Studio is connected |
+| `roxo_wait_for_studio` | Block until Studio attaches |
+| `roxo_serve_start` | Start a serve session for a project |
+| `roxo_serve_stop` | Stop a session this server started |
+| `roxo_build` | Build a place or model file without Studio |
+| `roxo_sourcemap` | Map files onto Roblox instances |
+
+Register it with an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "roxo": {
+      "command": "roxo",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Pass `--read-only` to expose only the tools that read state, for handing an agent a session it should observe but not steer.
+
+`roxo_serve_stop` only stops sessions started through `roxo_serve_start`. Killing a server the agent didn't start would let it silently take down a developer's own session.
+
+## HTTP API additions
+
+`GET /api/roxo/status` returns the JSON above. It's served as JSON, not msgpack, so nothing needs a decoder to ask whether Studio is connected.
+
+`GET /api/roxo` is an alias for `/api/rojo`. The handshake response gains these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `serverName` | `"roxo"`, so a client can tell which server answered |
+| `projectId` | Stable project identity used for pairing |
+| `autoConnect` | The policy this session honors |
+| `projectPath` | Absolute path of the project file |
+| `capabilities` | Features supported, so clients feature-check rather than guess from versions |
+| `clientId` | The id assigned to this client |
+
+Clients identify themselves with query parameters on the handshake (`placeId`, `gameId`, `client`, `clientVersion`, `autoConnected`, `matchReason`). Query parameters were chosen because `/api/rojo` is a GET that older clients already call with none of them — an upstream Rojo server ignores the extras entirely, and an upstream Rojo *plugin* ignores the extra response fields, since the msgpack encoding is struct-as-map.
+
+**Both directions stay compatible.** Roxo's plugin talks to a Rojo server, and Rojo's plugin talks to a Roxo server. A Rojo server that sets `servePlaceIds` will even auto-connect with Roxo's plugin, because a missing policy is treated as the default rather than as a refusal.
+
+## Project file additions
+
+```jsonc
+{
+  "name": "MyGame",
+  "servePlaceIds": [123456789],
+
+  // "off" | "matching" (default) | "always", or a boolean
+  "autoConnect": "matching",
+
+  // Optional. Defaults to a hash of the project file's path. Set it explicitly
+  // if the project lives at different paths on different machines and you want
+  // pairings to follow it.
+  "projectId": "my-game"
+}
+```
+
+`projectId` is intentionally **not** stable across machines by default. Pairing is a local trust decision, and a shared identifier would let a project file in a repository claim someone else's pairing.
+
+## Staying current with Rojo
+
+Roxo tracks upstream Rojo rather than drifting from it.
+
+`.github/workflows/upstream-sync.yml` runs daily: it merges `rojo-rbx/rojo@master` into a branch, runs the test suite, and opens a pull request. It never pushes to `main` — an automated merge that lands unreviewed is how a fork silently loses its own changes.
+
+* Clean merge, tests pass → a normal PR
+* Clean merge, tests fail → a draft PR, since Roxo's additions likely need updating
+* Conflicts → the conflicted merge is committed to the branch and opened as a draft, so there's something to check out and finish rather than a failed job with no artifact
+
+A CI job fails on unresolved conflict markers, so a conflicted branch can't be merged green.
+
+To keep merges boring, Roxo's changes live in new files wherever possible (`src/auto_connect.rs`, `src/client_registry.rs`, `src/session_registry.rs`, `src/cli/{sessions,status,wait,mcp}.rs`, `plugin/src/AutoConnect.lua`) rather than being woven through Rojo's.
+
+Trigger a sync by hand from the Actions tab.
+
+## Relationship to Rojo
+
+Roxo exists because these changes serve a narrower audience than Rojo's, not because anything is wrong with Rojo. Rojo is the upstream, it gets the credit, and Roxo takes its changes continuously.
+
+If you don't need unattended workflows, [use Rojo](https://github.com/rojo-rbx/rojo). Roxo's documentation covers only what it adds; for everything else, [Rojo's documentation](https://rojo.space/docs) applies unchanged.
 
 ## License
-Rojo is available under the terms of the Mozilla Public License, Version 2.0. See [LICENSE.txt](LICENSE.txt) for details.
+
+Roxo is available under the Mozilla Public License, Version 2.0, the same as Rojo. See [LICENSE.txt](LICENSE.txt).

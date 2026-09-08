@@ -4,7 +4,7 @@ use std::{
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use hyper_tungstenite::tungstenite::{connect, Message};
@@ -13,10 +13,10 @@ use rbx_dom_weak::types::Ref;
 use serde::{Deserialize, Serialize};
 use tempfile::{tempdir, TempDir};
 
-use librojo::{
+use libroxo::{
     web_api::{
-        ReadResponse, SerializeRequest, SerializeResponse, ServerInfoResponse, SocketPacket,
-        SocketPacketType,
+        ReadResponse, SerializeRequest, SerializeResponse, ServerInfoResponse,
+        SessionStatusResponse, SocketPacket, SocketPacketType,
     },
     SessionId,
 };
@@ -54,6 +54,11 @@ pub fn run_serve_test(test_name: &str, callback: impl FnOnce(TestServeSession, R
     settings.set_snapshot_path(snapshot_path);
     settings.set_sort_maps(true);
     settings.add_redaction(".serverVersion", "[server-version]");
+
+    // These two vary with where the test's temporary directory happens to be,
+    // so they would otherwise make every serve snapshot machine-specific.
+    settings.add_redaction(".projectPath", "[project-path]");
+    settings.add_redaction(".projectId", "[project-id]");
     settings.bind(move || callback(session, redactions));
 }
 
@@ -66,6 +71,7 @@ pub struct TestServeSession {
 
     port: usize,
     project_path: PathBuf,
+    log_path: PathBuf,
 }
 
 impl TestServeSession {
@@ -103,6 +109,14 @@ impl TestServeSession {
         let port = get_port_number();
         let port_string = port.to_string();
 
+        // Captured to a file rather than inherited, so that a server which
+        // fails to come online can say why. Inheriting leaves the harness
+        // reporting a bare timeout with the actual error swallowed by cargo's
+        // output capture.
+        let log_path = dir.path().join("serve.log");
+        let log = fs::File::create(&log_path).expect("Couldn't create server log file");
+        let log_err = log.try_clone().expect("Couldn't duplicate server log file");
+
         let rojo_process = Command::new(ROJO_PATH)
             .args([
                 "serve",
@@ -111,6 +125,8 @@ impl TestServeSession {
                 port_string.as_str(),
             ])
             .current_dir(working_dir)
+            .stdout(log)
+            .stderr(log_err)
             .spawn()
             .expect("Couldn't start Rojo");
 
@@ -119,6 +135,7 @@ impl TestServeSession {
             _dir: dir,
             port,
             project_path,
+            log_path,
         }
     }
 
@@ -130,38 +147,54 @@ impl TestServeSession {
         self.port
     }
 
-    /// Waits for the `rojo serve` server to come online with expontential
-    /// backoff.
+    /// Waits for the `rojo serve` server to come online.
+    ///
+    /// Bounded by wall time rather than a try count. A fixed number of retries
+    /// with short backoff gives the process well under a second to start, which
+    /// is enough on a warm machine and not enough on a cold one or a loaded CI
+    /// runner, producing failures that look like server bugs but are not.
     pub fn wait_to_come_online(&mut self) -> ServerInfoResponse {
-        const BASE_DURATION_MS: f32 = 30.0;
-        const EXP_BACKOFF_FACTOR: f32 = 1.3;
-        const MAX_TRIES: u32 = 5;
+        const POLL_INTERVAL: Duration = Duration::from_millis(50);
+        const TIMEOUT: Duration = Duration::from_secs(30);
 
-        for i in 1..=MAX_TRIES {
+        let deadline = Instant::now() + TIMEOUT;
+        let mut last_error = None;
+
+        while Instant::now() < deadline {
             match self.rojo_process.0.try_wait() {
-                Ok(Some(status)) => panic!("Rojo process exited with status {}", status),
+                Ok(Some(status)) => {
+                    let log = fs::read_to_string(&self.log_path).unwrap_or_default();
+
+                    panic!("Rojo process exited with status {status}\nServer output:\n{log}");
+                }
                 Ok(None) => { /* The process is still running, as expected */ }
                 Err(err) => panic!("Failed to wait on Rojo process: {}", err),
             }
 
-            let info = match self.get_api_rojo() {
-                Ok(info) => info,
-                Err(err) => {
-                    let retry_time_ms = BASE_DURATION_MS * (i as f32).powf(EXP_BACKOFF_FACTOR);
-                    let retry_time = Duration::from_millis(retry_time_ms as u64);
+            match self.get_api_rojo() {
+                Ok(info) => {
+                    log::info!("Got session info: {:?}", info);
 
-                    log::info!("Server error, retrying in {:?}: {}", retry_time, err);
-                    thread::sleep(retry_time);
-                    continue;
+                    return info;
                 }
-            };
-
-            log::info!("Got session info: {:?}", info);
-
-            return info;
+                Err(err) => {
+                    log::debug!("Server not up yet, retrying: {}", err);
+                    last_error = Some(err);
+                    thread::sleep(POLL_INTERVAL);
+                }
+            }
         }
 
-        panic!("Rojo server did not respond after {} tries.", MAX_TRIES);
+        let log = fs::read_to_string(&self.log_path).unwrap_or_default();
+
+        panic!(
+            "Rojo server did not respond within {:?}.\nLast error: {}\nServer output:\n{}",
+            TIMEOUT,
+            last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "<none>".to_owned()),
+            if log.is_empty() { "<nothing>" } else { &log }
+        );
     }
 
     pub fn get_api_rojo(&self) -> Result<ServerInfoResponse, reqwest::Error> {
@@ -169,6 +202,45 @@ impl TestServeSession {
         let body = reqwest::blocking::get(url)?.bytes()?;
 
         Ok(deserialize_msgpack(&body).expect("Server returned malformed response"))
+    }
+
+    /// Performs a handshake carrying the query parameters a Roxo client uses to
+    /// identify itself.
+    pub fn get_api_rojo_as_client(
+        &self,
+        query: &str,
+    ) -> Result<ServerInfoResponse, reqwest::Error> {
+        let url = format!("http://localhost:{}/api/rojo?{}", self.port, query);
+        let body = reqwest::blocking::get(url)?.bytes()?;
+
+        Ok(deserialize_msgpack(&body).expect("Server returned malformed response"))
+    }
+
+    pub fn get_api_status(&self) -> Result<SessionStatusResponse, reqwest::Error> {
+        let url = format!("http://localhost:{}/api/roxo/status", self.port);
+
+        reqwest::blocking::get(url)?.json()
+    }
+
+    /// Opens a change subscription and returns it, so the caller controls when
+    /// the connection closes.
+    pub fn open_subscription(
+        &self,
+        client_id: Option<u64>,
+    ) -> Result<
+        hyper_tungstenite::tungstenite::WebSocket<
+            hyper_tungstenite::tungstenite::stream::MaybeTlsStream<std::net::TcpStream>,
+        >,
+        Box<dyn std::error::Error>,
+    > {
+        let url = match client_id {
+            Some(id) => format!("ws://localhost:{}/api/socket/0?clientId={}", self.port, id),
+            None => format!("ws://localhost:{}/api/socket/0", self.port),
+        };
+
+        let (socket, _response) = connect(url)?;
+
+        Ok(socket)
     }
 
     pub fn get_api_read(&self, id: Ref) -> Result<ReadResponse<'_>, reqwest::Error> {

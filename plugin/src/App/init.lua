@@ -3,9 +3,9 @@ local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local RunService = game:GetService("RunService")
 
-local Rojo = script:FindFirstAncestor("Rojo")
-local Plugin = Rojo.Plugin
-local Packages = Rojo.Packages
+local Roxo = script:FindFirstAncestor("Roxo")
+local Plugin = Roxo.Plugin
+local Packages = Roxo.Packages
 
 local Roact = require(Packages.Roact)
 local Log = require(Packages.Log)
@@ -18,6 +18,7 @@ local Settings = require(Plugin.Settings)
 local strict = require(Plugin.strict)
 local Dictionary = require(Plugin.Dictionary)
 local ServeSession = require(Plugin.ServeSession)
+local AutoConnect = require(Plugin.AutoConnect)
 local ApiContext = require(Plugin.ApiContext)
 local PatchSet = require(Plugin.PatchSet)
 local PatchTree = require(Plugin.PatchTree)
@@ -61,9 +62,10 @@ function App:init()
 	self.confirmationEvent = self.confirmationBindable.Event
 	self.knownProjects = {}
 	self.notifId = 0
+	self.reportedAmbiguity = false
 
 	self.waypointConnection = ChangeHistoryService.OnUndo:Connect(function(action: string)
-		if not string.find(action, "^Rojo: Patch") then
+		if not string.find(action, "^Roxo: Patch") then
 			return
 		end
 
@@ -149,9 +151,33 @@ function App:init()
 			end
 		end)
 
-		self:tryAutoReconnect():andThen(function(didReconnect)
-			if not didReconnect then
-				self:checkSyncReminder()
+		-- Auto-connect runs before the legacy reconnect because it is a
+		-- superset of it: it searches every candidate port rather than only the
+		-- last one used, and verifies identity rather than matching on a
+		-- project name that any project could share.
+		self:tryAutoConnect()
+			:andThen(function(didConnect)
+				if didConnect then
+					return true
+				end
+
+				return self:tryAutoReconnect()
+			end)
+			:andThen(function(didConnect)
+				if not didConnect then
+					self:checkSyncReminder()
+				end
+
+				-- Started regardless of the outcome above: a session can end at
+				-- any time, and discovery should resume when it does.
+				self:startAutoConnectPolling()
+			end)
+
+		self.disconnectAutoConnectChanged = Settings:onChanged("autoConnect", function(enabled)
+			if enabled then
+				self:startAutoConnectPolling()
+			else
+				self:stopAutoConnectPolling()
 			end
 		end)
 	end
@@ -186,6 +212,11 @@ function App:willUnmount()
 	end
 
 	self:stopSyncReminderPolling()
+	self:stopAutoConnectPolling()
+
+	if self.disconnectAutoConnectChanged then
+		self.disconnectAutoConnectChanged()
+	end
 
 	self.autoConnectPlaytestServerListener()
 	self:clearRunningConnectionInfo()
@@ -327,6 +358,10 @@ function App:isSyncLockAvailable()
 		return true
 	end
 
+	-- Deliberately still named for Rojo. The lock is what stops two people in a
+	-- Team Create session from syncing at once, and it only works if Roxo and
+	-- Rojo can see each other's locks. Renaming it would let one of each run
+	-- simultaneously and fight over the same place.
 	local lock = ServerStorage:FindFirstChild("__Rojo_SessionLock")
 	if not lock then
 		-- No lock is made yet, so it is available
@@ -384,6 +419,225 @@ function App:releaseSyncLock()
 	end
 
 	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
+end
+
+--[[
+	Returns the places this user has paired with a project, keyed by place ID.
+]]
+function App:getPairings()
+	return Settings:get("pairedProjects") or {}
+end
+
+--[[
+	Remembers that this place belongs to the project we just connected to.
+
+	Pairing is what lets auto-connect work for a project that does not list its
+	place IDs: the first connection is made by a human, and every one after it
+	is automatic. It is keyed on the project's identity rather than its name,
+	since "Game" is not a distinguishing label.
+]]
+function App:setPairing(apiContext, host: string, port: string)
+	local serverInfo = apiContext and apiContext.__serverInfo
+	if serverInfo == nil or serverInfo.projectId == nil then
+		-- An upstream Rojo server has no identity to pair against. Auto-connect
+		-- can still reach it through servePlaceIds, which needs no pairing.
+		return
+	end
+
+	local placeId = tostring(game.PlaceId)
+	if ignorePlaceIds[placeId] then
+		-- These IDs are shared by every copy of a template place, so a pairing
+		-- saved against one would fire in unrelated places.
+		return
+	end
+
+	local pairings = table.clone(self:getPairings())
+	pairings[placeId] = {
+		projectId = serverInfo.projectId,
+		projectName = serverInfo.projectName,
+		projectPath = serverInfo.projectPath,
+		host = host,
+		port = port,
+		timestamp = os.time(),
+	}
+
+	Settings:set("pairedProjects", pairings)
+	Log.trace("Paired this place with project '{}'", serverInfo.projectName)
+end
+
+function App:getAutoConnectContext()
+	return {
+		placeId = game.PlaceId,
+		gameId = game.GameId,
+		pairings = self:getPairings(),
+	}
+end
+
+--[[
+	Looks for a server this place may attach to, and attaches if exactly one
+	qualifies.
+
+	Resolves with whether a session was started. Never rejects: discovery
+	failure is the ordinary state when no server is running, and treating it as
+	an error would fill the log every few seconds.
+]]
+function App:tryAutoConnect()
+	if not Settings:get("autoConnect") or not RunService:IsEdit() then
+		return Promise.resolve(false)
+	end
+
+	if self.serveSession ~= nil then
+		return Promise.resolve(false)
+	end
+
+	if not self:isSyncLockAvailable() then
+		-- Someone else in this Team Create session is already syncing.
+		return Promise.resolve(false)
+	end
+
+	local host = self.host:getValue()
+	if #host == 0 then
+		host = Config.defaultHost
+	end
+
+	return AutoConnect.discover({
+		host = host,
+		portRange = Settings:get("autoConnectPortRange"),
+		preferredPort = self.port:getValue(),
+		context = self:getAutoConnectContext(),
+	})
+		:andThen(function(result)
+			local chosen, tied = AutoConnect.choose(result.candidates)
+
+			if chosen == nil then
+				if #tied > 1 then
+					self:reportAmbiguousAutoConnect(tied)
+				else
+					-- The conflict is gone, so a future one is worth reporting.
+					self.reportedAmbiguity = false
+				end
+
+				return false
+			end
+
+			self.reportedAmbiguity = false
+
+			Log.trace(
+				"Auto-connecting to '{}' at {}:{} because of {}",
+				chosen.serverInfo.projectName,
+				chosen.host,
+				chosen.port,
+				chosen.match.reason
+			)
+
+			self.setHost(chosen.host)
+			self.setPort(chosen.port)
+
+			self:addNotification({
+				text = string.format(
+					"Auto-connected to '%s' at %s:%s.",
+					chosen.serverInfo.projectName,
+					chosen.host,
+					chosen.port
+				),
+				timeout = 8,
+			})
+
+			self:startSession({
+				host = chosen.host,
+				port = chosen.port,
+				autoConnected = true,
+				matchReason = chosen.match.reason,
+			})
+
+			return true
+		end)
+		:catch(function(err)
+			Log.trace("Auto-connect discovery failed: {}", tostring(err))
+			return false
+		end)
+end
+
+--[[
+	Tells the user that several projects claim this place.
+
+	Nothing is connected in this case. Choosing between them is a decision only
+	a person can make correctly, and guessing would risk overwriting one game
+	with another's source.
+]]
+function App:reportAmbiguousAutoConnect(candidates)
+	if self.reportedAmbiguity then
+		-- Polling would otherwise repeat this notification every few seconds.
+		return
+	end
+	self.reportedAmbiguity = true
+
+	local names = {}
+	for _, candidate in candidates do
+		table.insert(names, string.format("'%s' (:%s)", candidate.serverInfo.projectName, candidate.port))
+	end
+
+	local message = string.format(
+		"%d projects claim this place, so Roxo did not connect automatically:\n%s\n\nConnect to the one you want by hand.",
+		#candidates,
+		table.concat(names, "\n")
+	)
+
+	Log.warn(message)
+	self:addNotification({
+		text = message,
+		timeout = 20,
+	})
+end
+
+--[[
+	Keeps looking for a server for as long as this place is not syncing.
+
+	A single attempt at startup is not enough: an agent typically starts the
+	server *after* Studio is already open, which is exactly the case Rojo's
+	one-shot reconnect misses. The interval widens over time so an editor left
+	open all day is not polling at full rate hours later.
+]]
+function App:startAutoConnectPolling()
+	if self.autoConnectThread ~= nil or not Settings:get("autoConnect") or not RunService:IsEdit() then
+		return
+	end
+
+	Log.trace("Starting auto-connect polling thread")
+	self.autoConnectThread = task.spawn(function()
+		local interval = Config.autoConnectInitialInterval
+
+		while true do
+			task.wait(interval)
+
+			if self.autoConnectThread == nil then
+				return
+			end
+
+			if self.serveSession ~= nil then
+				-- Already syncing. Keep the thread alive so that disconnecting
+				-- resumes discovery without needing to restart the plugin.
+				interval = Config.autoConnectInitialInterval
+				continue
+			end
+
+			local ok, didConnect = self:tryAutoConnect():await()
+
+			if ok and didConnect then
+				interval = Config.autoConnectInitialInterval
+			else
+				interval = math.min(interval * 1.5, Config.autoConnectMaxInterval)
+			end
+		end
+	end)
+end
+
+function App:stopAutoConnectPolling()
+	if self.autoConnectThread then
+		Log.trace("Stopping auto-connect polling thread")
+		task.cancel(self.autoConnectThread)
+		self.autoConnectThread = nil
+	end
 end
 
 function App:findActiveServer()
@@ -600,7 +854,18 @@ function App:useRunningConnectionInfo()
 	self.setPort(port)
 end
 
-function App:startSession()
+--[[
+	Begins a sync session.
+
+	`options` carries how the session was reached: `autoConnected` and
+	`matchReason` are set when discovery chose this server rather than a person
+	clicking Connect. They travel into the confirmation logic and into the
+	server's client registry so an operator can always see why an unattended
+	connection happened.
+]]
+function App:startSession(options)
+	options = options or {}
+
 	local claimedLock, priorOwner = self:claimSyncLock()
 	if not claimedLock then
 		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
@@ -619,12 +884,26 @@ function App:startSession()
 		return
 	end
 
-	local host, port = self:getHostAndPort()
+	local host, port = options.host or nil, options.port or nil
+	if host == nil or port == nil then
+		host, port = self:getHostAndPort()
+	end
 
 	local baseUrl = if string.find(host, "^https?://")
 		then string.format("%s:%s", host, port)
 		else string.format("http://%s:%s", host, port)
-	local apiContext = ApiContext.new(baseUrl)
+
+	-- Telling the server who we are is what lets `roxo status` and the MCP
+	-- tools answer "is Studio actually connected?", which is the question an
+	-- agent has no other way to resolve.
+	local apiContext = ApiContext.new(baseUrl, {
+		client = "roxo-plugin",
+		clientVersion = Version.display(Config.version),
+		placeId = game.PlaceId,
+		gameId = game.GameId,
+		autoConnected = options.autoConnected == true,
+		matchReason = options.matchReason,
+	})
 
 	local serveSession = ServeSession.new({
 		apiContext = apiContext,
@@ -688,6 +967,7 @@ function App:startSession()
 			self.knownProjects[details] = true
 			self:setPriorSyncInfo(host, port, details)
 			self:setRunningConnectionInfo(baseUrl)
+			self:setPairing(serveSession.__apiContext, host, port)
 
 			local address = ("%s:%s"):format(host, port)
 			self:setState({
@@ -747,6 +1027,21 @@ function App:startSession()
 		-- Play solo auto-connect does not require confirmation
 		if self:isAutoConnectPlaytestServerAvailable() then
 			Log.trace("Accepting patch without confirmation because play solo auto-connect is enabled")
+			return "Accept"
+		end
+
+		-- A confirmation prompt would defeat the purpose of auto-connect, since
+		-- the case it exists for is precisely the one where nobody is present
+		-- to answer it. This is safe only because reaching here at all required
+		-- the server to identify this place, or the project file to opt in
+		-- explicitly; either way a human already decided these two belong
+		-- together. The decision is recorded on the server so it shows up in
+		-- `roxo status` rather than happening invisibly.
+		if options.autoConnected then
+			Log.trace(
+				"Accepting patch without confirmation because this session was auto-connected via {}",
+				options.matchReason
+			)
 			return "Accept"
 		end
 
@@ -853,7 +1148,7 @@ function App:endSession()
 end
 
 function App:render()
-	local pluginName = "Rojo " .. Version.display(Config.version)
+	local pluginName = "Roxo " .. Version.display(Config.version)
 
 	local function createPageElement(appStatus, additionalProps)
 		additionalProps = additionalProps or {}
@@ -1040,7 +1335,7 @@ function App:render()
 				name = pluginName,
 			}, {
 				button = e(StudioToggleButton, {
-					name = "Rojo",
+					name = "Roxo",
 					tooltip = "Show or hide the Rojo panel",
 					icon = self.state.toolbarIcon,
 					active = self.state.guiEnabled,

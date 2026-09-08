@@ -3,7 +3,7 @@ use std::path::Path;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use tempfile::{tempdir, TempDir};
 
-use librojo::cli::BuildCommand;
+use libroxo::cli::BuildCommand;
 
 pub fn benchmark_small_place(c: &mut Criterion) {
     bench_build_place(c, "Small Place", "test-projects/benchmark_small_place")

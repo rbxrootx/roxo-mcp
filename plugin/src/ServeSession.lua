@@ -208,7 +208,7 @@ function ServeSession:start()
 							return
 						end
 
-						Log.debug("Received {} messages from Rojo server", #messagesPacket.messages)
+						Log.debug("Received {} messages from Roxo server", #messagesPacket.messages)
 
 						for _, message in messagesPacket.messages do
 							self:__applyPatch(message)
@@ -254,7 +254,7 @@ function ServeSession:__onActiveScriptChanged(activeScript)
 
 	local scriptId = self.__instanceMap.fromInstances[activeScript]
 	if scriptId == nil then
-		Log.trace("Not opening script {} because it is not known by Rojo.", activeScript)
+		Log.trace("Not opening script {} because it is not known by Roxo.", activeScript)
 
 		return
 	end
@@ -274,7 +274,7 @@ function ServeSession:__onActiveScriptChanged(activeScript)
 		activeScript.Parent = existingParent
 	end)
 
-	-- Notify the Rojo server to open this script
+	-- Notify the Roxo server to open this script
 	self.__apiContext:open(scriptId)
 end
 
@@ -406,7 +406,7 @@ end
 
 function ServeSession:__applyPatch(patch)
 	local patchTimestamp = DateTime.now():FormatLocalTime("LTS", "en-us")
-	local historyRecording = ChangeHistoryService:TryBeginRecording("Rojo: Patch " .. patchTimestamp)
+	local historyRecording = ChangeHistoryService:TryBeginRecording("Roxo: Patch " .. patchTimestamp)
 	if not historyRecording then
 		-- There can only be one recording at a time
 		Log.debug("Failed to begin history recording for " .. patchTimestamp .. ". Another recording is in progress.")
@@ -461,7 +461,7 @@ function ServeSession:__applyPatch(patch)
 
 	if not PatchSet.isEmpty(unappliedPatch) then
 		Log.debug(
-			"Could not apply all changes requested by the Rojo server:\n{}",
+			"Could not apply all changes requested by the Roxo server:\n{}",
 			PatchSet.humanSummary(self.__instanceMap, unappliedPatch)
 		)
 	end
@@ -490,21 +490,21 @@ function ServeSession:__initialSync(serverInfo)
 		-- the tree defined in this response.
 		self.__apiContext:setMessageCursor(readResponseBody.messageCursor)
 
-		-- For any instances that line up with the Rojo server's view, start
+		-- For any instances that line up with the Roxo server's view, start
 		-- tracking them in the reconciler.
-		Log.trace("Matching existing Roblox instances to Rojo IDs")
+		Log.trace("Matching existing Roblox instances to Roxo IDs")
 		self:setLoadingText("Hydrating instance map...")
 		self.__reconciler:hydrate(readResponseBody.instances, serverInfo.rootInstanceId, game)
 
 		-- Calculate the initial patch to apply to the DataModel to catch us
-		-- up to what Rojo thinks the place should look like.
+		-- up to what Roxo thinks the place should look like.
 		Log.trace("Computing changes that plugin needs to make to catch up to server...")
 		self:setLoadingText("Finding differences between server and Studio...")
 		local success, catchUpPatch =
 			self.__reconciler:diff(readResponseBody.instances, serverInfo.rootInstanceId, game)
 
 		if not success then
-			Log.error("Could not compute a diff to catch up to the Rojo server: {:#?}", catchUpPatch)
+			Log.error("Could not compute a diff to catch up to the Roxo server: {:#?}", catchUpPatch)
 		end
 
 		for _, update in catchUpPatch.updated do
@@ -514,7 +514,7 @@ function ServeSession:__initialSync(serverInfo)
 				-- message instead of crashing.
 				return Promise.reject(
 					"Cannot sync a model as a place."
-						.. "\nEnsure Rojo is serving a project file that has a DataModel at the root of its tree and try again."
+						.. "\nEnsure Roxo is serving a project file that has a DataModel at the root of its tree and try again."
 						.. "\nSee project file docs: https://rojo.space/docs/v7/project-format/"
 				)
 			end

@@ -1,4 +1,4 @@
-# Rojo Changelog
+# Roxo Changelog
 
 <!-- DIRECTIONS
 Thanks for contributing to Rojo! Please add your change to the "Unreleased" section below.
@@ -30,6 +30,22 @@ Making a new release? Simply add the new header with the version and date undern
 -->
 
 ## Unreleased
+
+### Roxo
+
+Roxo forks Rojo at v7.7.0. Everything below is new in the fork.
+
+* **Auto-connect.** The Studio plugin finds a running serve session and attaches without a human pressing Connect, gated on the server proving it belongs to the place. A place qualifies through `servePlaceIds`, a matching `gameId`, a prior pairing, or an explicit `"autoConnect": "always"`. When two servers claim one place, neither is connected and the user is told.
+* **`roxo status`** reports whether Studio is actually connected, which client is attached, and why it connected. Backed by `GET /api/roxo/status`, served as JSON.
+* **`roxo sessions`** lists running serve sessions from a machine-local registry under `~/.roxo/sessions`, so discovery needs no port scanning.
+* **`roxo wait --for studio`** blocks until a Studio client attaches, so automation can tell a real sync from writing into the void.
+* **`roxo mcp`** serves Roxo's tools to AI agents over the Model Context Protocol.
+* **`autoConnect` and `projectId`** project file fields, plus `--auto-connect` and `--no-registry` on `serve`.
+* The server handshake now carries client identity, and `ServerInfoResponse` gained `serverName`, `projectId`, `autoConnect`, `projectPath`, `capabilities`, and `clientId`. All additive: a Rojo plugin works against a Roxo server and vice versa.
+* Installs as both `roxo` and `rojo`. Plugin settings migrate from Rojo's on first run.
+* Serve tests now wait on wall time rather than a fixed retry count, and report the server's output when it fails to start.
+
+### Inherited from Rojo
 
 * Fixed `$path` values that point outside the project folder failing to match `syncRule`s on Windows, which broke `rojo sourcemap` with a "could not be turned into a Roblox Instance" error. ([#1290])
 * Fixed `rojo serve` silently stopping syncing file changes on Windows when the served project path was a verbatim (`\\?\`) path, because tree paths and file-watcher event paths were canonicalized to different forms. ([#1290])

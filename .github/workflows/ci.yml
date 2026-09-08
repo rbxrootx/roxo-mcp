@@ -3,11 +3,11 @@ name: CI
 on:
   push:
     branches:
-    - master
+    - main
 
   pull_request:
     branches:
-    - master
+    - main
 
 jobs:
   build:
@@ -131,3 +131,20 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+  conflict-markers:
+    name: No conflict markers
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # The upstream sync workflow commits conflicted merges on purpose, so that a
+    # human has a branch to finish rather than a failed job with nothing in it.
+    # This is what stops such a branch from being merged while still conflicted.
+    - name: Check for unresolved conflict markers
+      run: |
+        if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- . ':(exclude).github/workflows/ci.yml'; then
+          echo "::error::Unresolved merge conflict markers are present."
+          exit 1
+        fi

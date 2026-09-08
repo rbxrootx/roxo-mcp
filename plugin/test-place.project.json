@@ -1,10 +1,10 @@
 {
-  "name": "Rojo Test Place",
+  "name": "Roxo Test Place",
   "tree": {
     "$className": "DataModel",
 
     "ReplicatedStorage": {
-      "Rojo": {
+      "Roxo": {
         "$path": "../plugin.project.json"
       },
 

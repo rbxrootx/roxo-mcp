@@ -7,10 +7,10 @@ use tempfile::tempdir;
 
 use crate::rojo_test::{
     internable::InternAndRedact,
-    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model},
+    serve_util::{deserialize_msgpack, run_serve_test, serialize_to_xml_model, TestServeSession},
 };
 
-use librojo::web_api::{SerializeResponse, SocketPacketType};
+use libroxo::web_api::{SerializeResponse, SocketPacketType};
 
 #[test]
 fn rejects_dns_rebinding_requests() {
@@ -774,4 +774,123 @@ fn forced_parent() {
         let model = serialize_to_xml_model(&serialize_response, &redactions);
         assert_snapshot!("forced_parent_serialize_model", model);
     });
+}
+
+/// The question an agent has no other way to answer: is Studio actually
+/// receiving these changes?
+///
+/// A running server proves nothing on its own, so this pins down the
+/// distinction the status endpoint exists to make. A handshake must not count
+/// as connected; only a live change subscription may.
+#[test]
+fn status_reports_whether_a_client_is_subscribed() {
+    run_serve_test("empty", |session, _redactions| {
+        let status = session.get_api_status().unwrap();
+
+        assert_eq!(status.server_name, "roxo");
+        assert_eq!(status.project_name, "empty");
+        assert!(!status.studio_connected);
+        assert_eq!(status.client_count, 0);
+
+        // Discovery probes every candidate port and walks away from all but
+        // one. Those probes must not register as connected clients.
+        let info = session
+            .get_api_rojo_as_client(
+                "placeId=123&gameId=456&client=roxo-plugin&clientVersion=7.7.0\
+                 &autoConnected=true&matchReason=servePlaceIds",
+            )
+            .unwrap();
+
+        let status = session.get_api_status().unwrap();
+        assert!(
+            !status.studio_connected,
+            "a handshake alone must not count as a connected client"
+        );
+
+        let client = status
+            .clients
+            .iter()
+            .find(|client| client.client_name == "roxo-plugin")
+            .expect("the handshake should have registered a client");
+
+        assert_eq!(client.place_id, Some(123));
+        assert_eq!(client.game_id, Some(456));
+        assert!(client.auto_connected);
+        assert_eq!(client.match_reason.as_deref(), Some("servePlaceIds"));
+        assert!(!client.subscribed);
+
+        // Opening the subscription is what makes the sync live.
+        let mut socket = session
+            .open_subscription(info.client_id)
+            .expect("should be able to open a change subscription");
+
+        let status = wait_for_status(&session, |status| status.studio_connected);
+
+        assert!(status.studio_connected);
+        assert_eq!(status.client_count, 1);
+
+        let client = status
+            .clients
+            .iter()
+            .find(|client| client.subscribed)
+            .expect("the subscribed client should be listed");
+
+        // The subscription attached to the handshake rather than creating a
+        // second, anonymous client.
+        assert_eq!(client.place_id, Some(123));
+        assert_eq!(client.match_reason.as_deref(), Some("servePlaceIds"));
+
+        let _ = socket.close(None);
+        drop(socket);
+
+        let status = wait_for_status(&session, |status| !status.studio_connected);
+
+        assert!(
+            !status.studio_connected,
+            "a closed subscription must not leave the session looking connected"
+        );
+    });
+}
+
+/// A client that predates the handshake still has to be visible, or an operator
+/// debugging an old plugin sees an empty client list and concludes nothing is
+/// connected.
+#[test]
+fn status_counts_clients_that_never_handshook() {
+    run_serve_test("empty", |session, _redactions| {
+        let mut socket = session
+            .open_subscription(None)
+            .expect("should be able to open a change subscription");
+
+        let status = wait_for_status(&session, |status| status.studio_connected);
+
+        assert_eq!(status.client_count, 1);
+        assert_eq!(status.clients[0].client_name, "unknown");
+        assert_eq!(status.clients[0].place_id, None);
+
+        let _ = socket.close(None);
+    });
+}
+
+/// Polls status until a condition holds, so these tests do not race the
+/// websocket task that records the subscription.
+fn wait_for_status(
+    session: &TestServeSession,
+    predicate: impl Fn(&libroxo::web_api::SessionStatusResponse) -> bool,
+) -> libroxo::web_api::SessionStatusResponse {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+
+    loop {
+        let status = session.get_api_status().unwrap();
+
+        if predicate(&status) {
+            return status;
+        }
+
+        if std::time::Instant::now() >= deadline {
+            panic!("Status did not reach the expected state within 10s: {status:?}");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
