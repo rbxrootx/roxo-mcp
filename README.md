@@ -105,10 +105,11 @@ Turn it off in the plugin's settings and Roxo behaves like Rojo.
 
 ## Fixes over Rojo
 
-- Deleting a directory no longer kills the server ([rojo#1236], [rojo#1206], [rojo#1309])
+- Deleting a directory no longer kills the server — carries [rojo#1319] ([rojo#1236], [rojo#1206], [rojo#1309])
 - A file that vanishes mid-event is skipped, not fatal
 - An unapplicable filesystem event is logged, not fatal
 
+[rojo#1319]: https://github.com/rojo-rbx/rojo/pull/1319
 [rojo#1206]: https://github.com/rojo-rbx/rojo/issues/1206
 [rojo#1236]: https://github.com/rojo-rbx/rojo/issues/1236
 [rojo#1309]: https://github.com/rojo-rbx/rojo/issues/1309
