@@ -9,6 +9,9 @@ use maplit::hashmap;
 use memofs::VfsSnapshot;
 use semver::Version;
 
+#[path = "build_support/plugin_packages.rs"]
+mod plugin_packages;
+
 fn snapshot_from_fs_path(path: &Path) -> io::Result<VfsSnapshot> {
     println!("cargo:rerun-if-changed={}", path.display());
 
@@ -53,6 +56,7 @@ fn main() -> Result<(), anyhow::Error> {
     let root_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let plugin_dir = root_dir.join("plugin");
     let templates_dir = root_dir.join("assets").join("project-templates");
+    plugin_packages::validate(&plugin_dir).map_err(anyhow::Error::msg)?;
 
     let our_version = Version::parse(env::var_os("CARGO_PKG_VERSION").unwrap().to_str().unwrap())?;
     let plugin_version =

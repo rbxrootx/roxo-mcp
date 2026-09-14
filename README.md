@@ -19,6 +19,14 @@ cargo install --git https://github.com/rbxrootx/roxo-mcp roxo
 roxo plugin install
 ```
 
+To build from a checkout, clone the plugin dependencies too:
+
+```sh
+git clone --recursive https://github.com/rbxrootx/roxo-mcp.git
+```
+
+For an existing checkout, run `git submodule update --init --recursive` before building. Roxo's build stops with a clear error if these dependencies are missing instead of packaging a broken Studio plugin.
+
 The plugin replaces Rojo's — same filename, so you don't end up with two. Studio picks it up without a restart.
 
 ## MCP

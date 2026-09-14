@@ -31,6 +31,8 @@ Making a new release? Simply add the new header with the version and date undern
 
 ## Unreleased
 
+* Building from a source checkout now fails with a clear recovery command when plugin dependency submodules are missing, instead of packaging a plugin that crashes in Studio.
+
 ## [7.7.0+roxo.1] (September 8, 2026)
 
 ### Roxo
