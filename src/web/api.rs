@@ -13,7 +13,7 @@ use rbx_dom_weak::{
 };
 
 use crate::{
-    client_registry::{ClientHandshake, ClientId},
+    client_registry::{ClientHandshake, ClientId, ProbeReport},
     serve_session::ServeSession,
     session_registry,
     snapshot::{InstanceWithMeta, PatchSet, PatchUpdate},
@@ -47,6 +47,7 @@ pub async fn call(
             service.handle_api_rojo(&request).await
         }
         (&Method::GET, "/api/roxo/status") => service.handle_api_status().await,
+        (&Method::POST, "/api/roxo/probe-report") => service.handle_api_probe_report(request).await,
         (&Method::GET, path) if path.starts_with("/api/read/") => {
             service.handle_api_read(request).await
         }
@@ -77,6 +78,13 @@ pub async fn call(
     }
 }
 
+/// The client name the Roxo plugin's discovery probes identify with. Probes are
+/// recorded apart from clients, since looking at a server is not attaching.
+const DISCOVERY_PROBE_CLIENT: &str = "roxo-plugin-probe";
+
+/// Probe reports are a sentence of text; anything larger is not one.
+const MAX_PROBE_REPORT_BYTES: usize = 8 * 1024;
+
 pub struct ApiService {
     serve_session: Arc<ServeSession>,
     remote_addr: SocketAddr,
@@ -101,10 +109,18 @@ impl ApiService {
         // those clients and by upstream Rojo, so the handshake costs nothing in
         // compatibility.
         let handshake = parse_handshake(request.uri().query());
-        let client_id = self
-            .serve_session
-            .clients()
-            .handshake(handshake, self.remote_addr.to_string());
+        let client_id = if handshake.client_name.as_deref() == Some(DISCOVERY_PROBE_CLIENT) {
+            self.serve_session
+                .clients()
+                .record_probe(&handshake, self.remote_addr.to_string());
+            None
+        } else {
+            Some(
+                self.serve_session
+                    .clients()
+                    .handshake(handshake, self.remote_addr.to_string()),
+            )
+        };
 
         msgpack_ok(&ServerInfoResponse {
             server_version: SERVER_VERSION.to_owned(),
@@ -121,7 +137,7 @@ impl ApiService {
             auto_connect: self.serve_session.auto_connect().as_str().to_owned(),
             project_path: self.serve_session.project_path().display().to_string(),
             capabilities: capabilities(),
-            client_id: Some(client_id),
+            client_id,
             peer_ports: session_registry::peer_ports(self.serve_session.session_id()),
         })
     }
@@ -148,11 +164,48 @@ impl ApiService {
                 studio_connected: clients.subscribed_count() > 0,
                 client_count: clients.subscribed_count(),
                 clients: clients.clients(),
+                recent_probes: clients.recent_probes(),
                 last_patch_at: message_queue.last_push_at(),
                 patches_sent: message_queue.cursor(),
             },
             StatusCode::OK,
         )
+    }
+
+    /// Records why a place's plugin declined this server, so `roxo status` can
+    /// say so instead of the reason staying in Studio's Output.
+    async fn handle_api_probe_report(&self, request: Request<Body>) -> Response<Body> {
+        let body = match body::to_bytes(request.into_body()).await {
+            Ok(body) if body.len() <= MAX_PROBE_REPORT_BYTES => body,
+            Ok(_) => {
+                return json(
+                    ErrorResponse::bad_request("Probe report is too large"),
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                )
+            }
+            Err(err) => {
+                return json(
+                    ErrorResponse::bad_request(format!("Could not read body: {err}")),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        };
+
+        let report: ProbeReport = match serde_json::from_slice(&body) {
+            Ok(report) => report,
+            Err(err) => {
+                return json(
+                    ErrorResponse::bad_request(format!("Invalid probe report: {err}")),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        };
+
+        self.serve_session
+            .clients()
+            .record_probe_verdict(report, self.remote_addr.to_string());
+
+        json(serde_json::json!({ "recorded": true }), StatusCode::OK)
     }
 
     /// Handle WebSocket upgrade for real-time message streaming

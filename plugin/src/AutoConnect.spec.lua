@@ -201,6 +201,77 @@ return function()
 		end)
 	end)
 
+	describe("reject codes", function()
+		it("should give a stable code with every rejection", function()
+			local cases = {
+				{ serverInfo({ expectedPlaceIds = { 1 } }), { placeId = 2 }, "NotInServePlaceIds" },
+				{ serverInfo({ unexpectedPlaceIds = { 2 } }), { placeId = 2 }, "BlockedPlace" },
+				{ serverInfo({ autoConnect = "off" }), { placeId = 2 }, "AutoConnectOff" },
+				{ serverInfo(), { placeId = 0 }, "UnpublishedPlace" },
+				{ serverInfo({ autoConnect = "always" }), { placeId = 2 }, "AlwaysOnPublishedPlace" },
+				{ serverInfo(), { placeId = 2 }, "NoIdentityMatch" },
+				{ serverInfo({ protocolVersion = -1 }), { placeId = 2 }, "ProtocolMismatch" },
+			}
+
+			for _, case in cases do
+				local match, why, code = AutoConnect.evaluate(case[1], case[2])
+				expect(match).to.equal(nil)
+				expect(type(why)).to.equal("string")
+				expect(code).to.equal(AutoConnect.RejectCode[case[3]])
+			end
+		end)
+	end)
+
+	describe("probe reports", function()
+		local reporting = { "auto-connect", "probe-report" }
+		local context = { placeId = 99657347679962, gameId = 42 }
+
+		it("should identify the place in the probe", function()
+			local query = AutoConnect.probeQuery(context)
+
+			expect(string.find(query, "client=roxo%-plugin%-probe")).to.be.ok()
+			expect(string.find(query, "placeId=99657347679962", 1, true)).to.be.ok()
+			expect(string.find(query, "gameId=42", 1, true)).to.be.ok()
+		end)
+
+		it("should only report to servers that accept reports", function()
+			local rejected = {
+				{
+					baseUrl = "http://localhost:1",
+					serverInfo = serverInfo({ capabilities = reporting }),
+					reason = "r",
+					code = AutoConnect.RejectCode.NotInServePlaceIds,
+				},
+				-- An upstream Rojo server has no report route.
+				{ baseUrl = "http://localhost:2", serverInfo = serverInfo(), reason = "r", code = "x" },
+			}
+
+			local verdicts = AutoConnect.buildVerdicts(rejected, {}, context)
+
+			expect(#verdicts).to.equal(1)
+			expect(verdicts[1].baseUrl).to.equal("http://localhost:1")
+			expect(verdicts[1].body.outcome).to.equal("rejected")
+			expect(verdicts[1].body.code).to.equal("not-in-serve-place-ids")
+			-- Strings, so no JSON encoder can turn the ID into exponent form.
+			expect(verdicts[1].body.placeId).to.equal("99657347679962")
+		end)
+
+		it("should tell every tied server about the conflict", function()
+			local tied = {
+				{ port = "34374", baseUrl = "a", serverInfo = serverInfo({ capabilities = reporting }) },
+				{ port = "34375", baseUrl = "b", serverInfo = serverInfo({ capabilities = reporting }) },
+			}
+
+			local verdicts = AutoConnect.buildVerdicts({}, tied, context)
+
+			expect(#verdicts).to.equal(2)
+			for _, verdict in verdicts do
+				expect(verdict.body.outcome).to.equal("ambiguous")
+				expect(#verdict.body.conflictingPorts).to.equal(2)
+			end
+		end)
+	end)
+
 	describe("parsePortRanges", function()
 		it("should parse several ranges and single ports", function()
 			local ranges = AutoConnect.parsePortRanges("34370-34379, 34872-34881,40000")

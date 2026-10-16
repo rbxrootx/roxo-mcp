@@ -8,6 +8,7 @@ capabilities:
   - status
   - client-registry
   - sessions
+  - probe-report
 clientId: 1
 expectedPlaceIds: ~
 gameId: ~

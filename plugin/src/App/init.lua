@@ -500,12 +500,14 @@ function App:tryAutoConnect()
 		host = Config.defaultHost
 	end
 
+	local context = self:getAutoConnectContext()
+
 	return AutoConnect.discover({
 		host = host,
 		portRange = Settings:get("autoConnectPortRange"),
 		preferredPort = self.port:getValue(),
 		knownPeerPorts = self.knownPeerPorts,
-		context = self:getAutoConnectContext(),
+		context = context,
 	})
 		:andThen(function(result)
 			-- Only replaced when some server answered: with every server gone
@@ -516,6 +518,10 @@ function App:tryAutoConnect()
 			end
 
 			local chosen, tied = AutoConnect.choose(result.candidates)
+
+			-- Tell each server that was passed over why, so `roxo status` on
+			-- that port can answer what Studio's Output otherwise only shows.
+			AutoConnect.reportVerdicts(result.rejected, tied, context)
 
 			if chosen == nil then
 				if #tied > 1 then

@@ -68,10 +68,96 @@ pub struct ClientHandshake {
     pub match_reason: Option<String>,
 }
 
+/// A place that looked at this server during auto-connect discovery, and what
+/// it decided.
+///
+/// This is what separates "Studio is open but refused this server, and here is
+/// why" from "no Studio has looked at this port at all". Without it the plugin's
+/// reasons stay in Studio's Output, where an agent cannot read them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeInfo {
+    /// `None` for a plugin too old to say which place it is.
+    pub place_id: Option<u64>,
+    pub game_id: Option<u64>,
+    pub client_version: Option<String>,
+    pub remote_addr: String,
+
+    pub first_probe_at: u64,
+    pub last_probe_at: u64,
+    pub probe_count: u64,
+
+    /// Why the place did not connect, if its plugin said. Older plugins probe
+    /// without ever reporting, so absence is not proof of acceptance.
+    pub verdict: Option<ProbeVerdict>,
+}
+
+/// The plugin's reason for not connecting to this server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeVerdict {
+    /// `rejected` (this server does not qualify) or `ambiguous` (it qualifies,
+    /// but so does another server, so neither was chosen).
+    pub outcome: String,
+
+    /// A stable identifier for the reason, such as `not-in-serve-place-ids`,
+    /// for tooling to branch on instead of parsing `reason`.
+    pub code: Option<String>,
+    pub reason: String,
+
+    /// For `ambiguous`, the ports of every server that claimed the place.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicting_ports: Vec<u16>,
+
+    pub reported_at: u64,
+}
+
+/// What the plugin sends to `/api/roxo/probe-report`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeReport {
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub place_id: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_id")]
+    pub game_id: Option<u64>,
+    pub outcome: String,
+    pub code: Option<String>,
+    pub reason: String,
+    #[serde(default)]
+    pub conflicting_ports: Vec<u16>,
+}
+
+/// Accepts an ID as a number or a string. Studio's JSON encoder cannot be
+/// relied on to write a 14-digit place ID in integer form, so the plugin sends
+/// IDs as strings; numbers are still accepted from other clients.
+fn lenient_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Number(u64),
+        Text(String),
+    }
+
+    Ok(match Option::<Repr>::deserialize(deserializer)? {
+        Some(Repr::Number(id)) => Some(id),
+        Some(Repr::Text(text)) => Some(text.trim().parse().map_err(serde::de::Error::custom)?),
+        None => None,
+    })
+}
+
+type ProbeKey = (Option<u64>, Option<u64>);
+
 #[derive(Debug, Default)]
 pub struct ClientRegistry {
     clients: Mutex<HashMap<ClientId, ClientInfo>>,
     next_id: AtomicU64,
+    probes: Mutex<HashMap<ProbeKey, ProbeInfo>>,
+}
+
+/// Clips client-supplied text. These arrive on an unauthenticated route and are
+/// held in memory and echoed to agents, so their size is bounded here.
+fn clip(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 fn now_secs() -> u64 {
@@ -175,6 +261,109 @@ impl ClientRegistry {
             .filter(|client| client.subscribed)
             .count()
     }
+
+    /// How long a place's probes are remembered after the last one. Long
+    /// enough to outlast the plugin's slowest poll interval many times over,
+    /// short enough that a place closed a while ago stops being reported.
+    const PROBE_TTL_SECS: u64 = 600;
+
+    /// How many places are remembered at once. One per open Studio place in
+    /// practice; the bound only matters against a misbehaving client.
+    const MAX_PROBES: usize = 16;
+
+    const MAX_REASON_CHARS: usize = 500;
+    const MAX_FIELD_CHARS: usize = 64;
+
+    /// Records a discovery probe. Probes are kept apart from clients: a probe
+    /// is the plugin looking, not something attached.
+    pub fn record_probe(&self, handshake: &ClientHandshake, remote_addr: String) {
+        let now = now_secs();
+        let mut probes = self.probes.lock().unwrap();
+
+        let entry = Self::probe_entry(&mut probes, handshake.place_id, handshake.game_id, now);
+        entry.last_probe_at = now;
+        entry.probe_count += 1;
+        entry.remote_addr = remote_addr;
+        if let Some(version) = &handshake.client_version {
+            entry.client_version = Some(clip(version, Self::MAX_FIELD_CHARS));
+        }
+    }
+
+    /// Records why a place declined this server.
+    pub fn record_probe_verdict(&self, report: ProbeReport, remote_addr: String) {
+        let now = now_secs();
+        let mut probes = self.probes.lock().unwrap();
+
+        let entry = Self::probe_entry(&mut probes, report.place_id, report.game_id, now);
+        if entry.remote_addr.is_empty() {
+            entry.remote_addr = remote_addr;
+        }
+
+        let mut conflicting_ports = report.conflicting_ports;
+        conflicting_ports.truncate(Self::MAX_PROBES);
+
+        entry.verdict = Some(ProbeVerdict {
+            outcome: clip(&report.outcome, Self::MAX_FIELD_CHARS),
+            code: report.code.map(|code| clip(&code, Self::MAX_FIELD_CHARS)),
+            reason: clip(&report.reason, Self::MAX_REASON_CHARS),
+            conflicting_ports,
+            reported_at: now,
+        });
+    }
+
+    /// Recently seen probes, most recent first.
+    pub fn recent_probes(&self) -> Vec<ProbeInfo> {
+        let now = now_secs();
+        let mut probes = self.probes.lock().unwrap();
+        Self::prune_probes(&mut probes, now);
+
+        let mut list: Vec<_> = probes.values().cloned().collect();
+        list.sort_by(|a, b| b.last_probe_at.cmp(&a.last_probe_at));
+        list
+    }
+
+    fn probe_entry(
+        probes: &mut HashMap<ProbeKey, ProbeInfo>,
+        place_id: Option<u64>,
+        game_id: Option<u64>,
+        now: u64,
+    ) -> &mut ProbeInfo {
+        Self::prune_probes(probes, now);
+
+        let key = (place_id, game_id);
+        if !probes.contains_key(&key) && probes.len() >= Self::MAX_PROBES {
+            if let Some(oldest) = probes
+                .iter()
+                .min_by_key(|(_key, probe)| probe.last_probe_at)
+                .map(|(key, _probe)| *key)
+            {
+                probes.remove(&oldest);
+            }
+        }
+
+        probes.entry(key).or_insert_with(|| ProbeInfo {
+            place_id,
+            game_id,
+            client_version: None,
+            remote_addr: String::new(),
+            first_probe_at: now,
+            last_probe_at: now,
+            probe_count: 0,
+            verdict: None,
+        })
+    }
+
+    fn prune_probes(probes: &mut HashMap<ProbeKey, ProbeInfo>, now: u64) {
+        probes.retain(|_key, probe| {
+            let last = probe
+                .verdict
+                .as_ref()
+                .map_or(probe.last_probe_at, |verdict| {
+                    verdict.reported_at.max(probe.last_probe_at)
+                });
+            now.saturating_sub(last) < Self::PROBE_TTL_SECS
+        });
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +427,117 @@ mod test {
         let ids: Vec<_> = registry.clients().iter().map(|client| client.id).collect();
         assert_eq!(ids, vec![session]);
         assert!(!ids.contains(&probe));
+    }
+
+    fn probe_of(place_id: u64) -> ClientHandshake {
+        ClientHandshake {
+            place_id: Some(place_id),
+            game_id: Some(7),
+            client_name: Some("roxo-plugin-probe".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn probes_are_counted_per_place_and_kept_apart_from_clients() {
+        let registry = ClientRegistry::new();
+        registry.record_probe(&probe_of(1), "127.0.0.1:1".to_owned());
+        registry.record_probe(&probe_of(1), "127.0.0.1:1".to_owned());
+        registry.record_probe(&probe_of(2), "127.0.0.1:2".to_owned());
+
+        let probes = registry.recent_probes();
+        assert_eq!(probes.len(), 2);
+        let first = probes.iter().find(|p| p.place_id == Some(1)).unwrap();
+        assert_eq!(first.probe_count, 2);
+        assert!(first.verdict.is_none());
+
+        assert!(registry.clients().is_empty());
+    }
+
+    #[test]
+    fn a_verdict_attaches_to_the_place_that_probed() {
+        let registry = ClientRegistry::new();
+        registry.record_probe(&probe_of(1), "127.0.0.1:1".to_owned());
+        registry.record_probe_verdict(
+            ProbeReport {
+                place_id: Some(1),
+                game_id: Some(7),
+                outcome: "rejected".to_owned(),
+                code: Some("not-in-serve-place-ids".to_owned()),
+                reason: "this place is not listed in servePlaceIds".to_owned(),
+                conflicting_ports: Vec::new(),
+            },
+            "127.0.0.1:1".to_owned(),
+        );
+
+        let probes = registry.recent_probes();
+        assert_eq!(probes.len(), 1);
+        let verdict = probes[0].verdict.as_ref().unwrap();
+        assert_eq!(verdict.code.as_deref(), Some("not-in-serve-place-ids"));
+        assert_eq!(probes[0].probe_count, 1);
+    }
+
+    #[test]
+    fn client_supplied_probe_text_is_bounded() {
+        let registry = ClientRegistry::new();
+        registry.record_probe_verdict(
+            ProbeReport {
+                place_id: Some(1),
+                outcome: "x".repeat(10_000),
+                reason: "y".repeat(10_000),
+                conflicting_ports: (0..1000).collect(),
+                ..Default::default()
+            },
+            "127.0.0.1:1".to_owned(),
+        );
+
+        for place in 0..100 {
+            registry.record_probe(&probe_of(place), "127.0.0.1:1".to_owned());
+        }
+
+        let probes = registry.recent_probes();
+        assert!(probes.len() <= ClientRegistry::MAX_PROBES);
+
+        let all = registry.probes.lock().unwrap();
+        for probe in all.values() {
+            if let Some(verdict) = &probe.verdict {
+                assert!(verdict.reason.chars().count() <= ClientRegistry::MAX_REASON_CHARS);
+                assert!(verdict.outcome.chars().count() <= ClientRegistry::MAX_FIELD_CHARS);
+                assert!(verdict.conflicting_ports.len() <= ClientRegistry::MAX_PROBES);
+            }
+        }
+    }
+
+    #[test]
+    fn probe_reports_accept_ids_as_strings_or_numbers() {
+        let as_text: ProbeReport = serde_json::from_str(
+            r#"{"placeId":"99657347679962","gameId":"42","outcome":"rejected","reason":"r"}"#,
+        )
+        .unwrap();
+        assert_eq!(as_text.place_id, Some(99657347679962));
+        assert_eq!(as_text.game_id, Some(42));
+
+        let as_number: ProbeReport =
+            serde_json::from_str(r#"{"placeId":5,"outcome":"rejected","reason":"r"}"#).unwrap();
+        assert_eq!(as_number.place_id, Some(5));
+        assert_eq!(as_number.game_id, None);
+
+        assert!(serde_json::from_str::<ProbeReport>(
+            r#"{"placeId":"nope","outcome":"rejected","reason":"r"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn old_probes_expire() {
+        let registry = ClientRegistry::new();
+        registry.record_probe(&probe_of(1), "127.0.0.1:1".to_owned());
+
+        for probe in registry.probes.lock().unwrap().values_mut() {
+            probe.last_probe_at = now_secs() - (ClientRegistry::PROBE_TTL_SECS + 1);
+        }
+
+        assert!(registry.recent_probes().is_empty());
     }
 
     #[test]

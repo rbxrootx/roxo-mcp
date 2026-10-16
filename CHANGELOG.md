@@ -34,6 +34,7 @@ Making a new release? Simply add the new header with the version and date undern
 * Building from a source checkout now fails with a clear recovery command when plugin dependency submodules are missing, instead of packaging a plugin that crashes in Studio.
 * Auto-connect now scans a list of port ranges, defaulting to `34370-34379, 34872-34881`. A server outside the old single range was never discovered, so a place that its project named in `servePlaceIds` still sat unconnected. The old saved default is upgraded automatically.
 * The server handshake now lists the ports of the other Roxo sessions on the machine as `peerPorts`, and the plugin probes them too. Once Studio finds any one Roxo server it finds them all, whatever port they are on. This only adds places to look: every server found this way passes the same identity check. Omitted when there are no other sessions, so the handshake is unchanged for upstream Rojo.
+* `roxo status` now shows which Studio places probed the server recently, and why each one did not connect. Discovery probes carry the place and game IDs, and the plugin reports its verdict (`rejected` or `ambiguous`, with a stable code such as `not-in-serve-place-ids`) to the new `POST /api/roxo/probe-report`, sent only to servers that advertise the `probe-report` capability. This tells "Studio looked here and refused, because…" apart from "no Studio has looked at this port". Probes no longer appear in the client list.
 
 ## [7.7.0+roxo.1] (September 8, 2026)
 

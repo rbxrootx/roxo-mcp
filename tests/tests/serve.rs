@@ -965,3 +965,72 @@ fn handshake_lists_the_other_sessions_as_peers() {
     assert_eq!(first_info.peer_ports, vec![second.port() as u16]);
     assert_eq!(second_info.peer_ports, vec![first.port() as u16]);
 }
+
+/// An agent needs to tell "Studio looked at this server and refused it, and
+/// here is why" apart from "nothing has looked at this port at all". Probes
+/// and the plugin's verdict are recorded for that, and kept out of the client
+/// list, since a probe is not an attached editor.
+#[test]
+fn status_reports_probes_and_why_a_place_declined() {
+    run_serve_test("empty", |session, _redactions| {
+        let status = session.get_api_status().unwrap();
+        assert!(status.recent_probes.is_empty());
+
+        let info = session
+            .get_api_rojo_as_client(
+                "client=roxo-plugin-probe&placeId=99657347679962&gameId=42&clientVersion=7.7.0",
+            )
+            .unwrap();
+        assert_eq!(info.client_id, None);
+        assert!(info.capabilities.contains(&"probe-report".to_owned()));
+
+        let response = reqwest::blocking::Client::new()
+            .post(format!(
+                "http://localhost:{}/api/roxo/probe-report",
+                session.port()
+            ))
+            .body(
+                r#"{"placeId":"99657347679962","gameId":"42","outcome":"rejected",
+                    "code":"not-in-serve-place-ids",
+                    "reason":"this place is not listed in servePlaceIds"}"#,
+            )
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let status = session.get_api_status().unwrap();
+        assert!(
+            status
+                .clients
+                .iter()
+                .all(|client| client.client_name != "roxo-plugin-probe"),
+            "a probe is not a client"
+        );
+        assert_eq!(status.recent_probes.len(), 1);
+
+        let probe = &status.recent_probes[0];
+        assert_eq!(probe.place_id, Some(99657347679962));
+        assert_eq!(probe.probe_count, 1);
+
+        let verdict = probe.verdict.as_ref().unwrap();
+        assert_eq!(verdict.outcome, "rejected");
+        assert_eq!(verdict.code.as_deref(), Some("not-in-serve-place-ids"));
+    });
+}
+
+#[test]
+fn malformed_probe_reports_are_refused() {
+    run_serve_test("empty", |session, _redactions| {
+        let response = reqwest::blocking::Client::new()
+            .post(format!(
+                "http://localhost:{}/api/roxo/probe-report",
+                session.port()
+            ))
+            .body("not json")
+            .send()
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(session.get_api_status().unwrap().recent_probes.is_empty());
+    });
+}

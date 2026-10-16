@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use strum::Display;
 
 use crate::{
-    client_registry::{ClientId, ClientInfo},
+    client_registry::{ClientId, ClientInfo, ProbeInfo},
     session_id::SessionId,
     snapshot::{
         AppliedPatchSet, InstanceMetadata as RojoInstanceMetadata, InstanceWithMeta, RojoTree,
@@ -37,6 +37,7 @@ pub(crate) fn capabilities() -> Vec<String> {
         "status".to_owned(),
         "client-registry".to_owned(),
         "sessions".to_owned(),
+        "probe-report".to_owned(),
     ]
 }
 
@@ -246,6 +247,13 @@ pub struct SessionStatusResponse {
     pub studio_connected: bool,
     pub client_count: usize,
     pub clients: Vec<ClientInfo>,
+
+    /// Places whose plugin looked at this server during discovery in the last
+    /// few minutes, and why each did not connect when it said. Empty means no
+    /// Roxo plugin has probed this port recently: Studio is closed, the place's
+    /// auto-connect is off, or this port is outside what the plugin scans.
+    #[serde(default)]
+    pub recent_probes: Vec<ProbeInfo>,
 
     /// Unix timestamp of the most recent patch broadcast, or `None` if nothing
     /// has changed since the server started.

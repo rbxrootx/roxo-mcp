@@ -15,6 +15,8 @@
 	the user instead of guessed at.
 ]]
 
+local HttpService = game:GetService("HttpService")
+
 local Packages = script.Parent.Parent.Packages
 local Http = require(Packages.Http)
 local Log = require(Packages.Log)
@@ -22,6 +24,7 @@ local Promise = require(Packages.Promise)
 
 local Config = require(script.Parent.Config)
 local Types = require(script.Parent.Types)
+local Version = require(script.Parent.Version)
 
 local validateApiInfo = Types.ifEnabled(Types.ApiInfoResponse)
 
@@ -47,6 +50,23 @@ AutoConnect.MatchReason = {
 	Declared = "declared",
 }
 
+--[[
+	Stable identifiers for why a server was not connected to. The plugin
+	reports these to the server so `roxo status` and agents can branch on them
+	rather than parse the human-readable reason, which may be reworded.
+]]
+AutoConnect.RejectCode = {
+	NoServerInfo = "no-server-info",
+	ProtocolMismatch = "protocol-mismatch",
+	BlockedPlace = "blocked-place",
+	NotInServePlaceIds = "not-in-serve-place-ids",
+	AutoConnectOff = "auto-connect-off",
+	UnpublishedPlace = "unpublished-place",
+	AlwaysOnPublishedPlace = "always-on-published-place",
+	NoIdentityMatch = "no-identity-match",
+	Ambiguous = "ambiguous",
+}
+
 local REASON_STRENGTH = {
 	[AutoConnect.MatchReason.ServePlaceIds] = 4,
 	[AutoConnect.MatchReason.GameId] = 3,
@@ -61,15 +81,16 @@ local REASON_STRENGTH = {
 	reading them from the DataModel, so this stays a pure function that can be
 	tested against cases that are painful to reproduce in Studio.
 
-	Returns a match table, or nil plus a reason the candidate was rejected.
+	Returns a match table, or nil plus a reason the candidate was rejected and
+	its `RejectCode`.
 ]]
 function AutoConnect.evaluate(serverInfo, context)
 	if serverInfo == nil then
-		return nil, "no server info"
+		return nil, "no server info", AutoConnect.RejectCode.NoServerInfo
 	end
 
 	if serverInfo.protocolVersion ~= Config.protocolVersion then
-		return nil, "incompatible protocol version"
+		return nil, "incompatible protocol version", AutoConnect.RejectCode.ProtocolMismatch
 	end
 
 	local placeId = context.placeId or 0
@@ -78,13 +99,13 @@ function AutoConnect.evaluate(serverInfo, context)
 	-- A blocked place is never eligible, whatever else matches. This check
 	-- comes first so an explicit exclusion cannot be overridden by a pairing.
 	if serverInfo.unexpectedPlaceIds and table.find(serverInfo.unexpectedPlaceIds, placeId) then
-		return nil, "this place is listed in blockedPlaceIds"
+		return nil, "this place is listed in blockedPlaceIds", AutoConnect.RejectCode.BlockedPlace
 	end
 
 	-- A server that names the places it serves is making an exhaustive claim,
 	-- so a place outside the list is disqualified even if it was paired before.
 	if serverInfo.expectedPlaceIds and not table.find(serverInfo.expectedPlaceIds, placeId) then
-		return nil, "this place is not listed in servePlaceIds"
+		return nil, "this place is not listed in servePlaceIds", AutoConnect.RejectCode.NotInServePlaceIds
 	end
 
 	-- Upstream Rojo servers do not report a policy. Treating that as the
@@ -93,7 +114,7 @@ function AutoConnect.evaluate(serverInfo, context)
 	local policy = serverInfo.autoConnect or "matching"
 
 	if policy == "off" then
-		return nil, "the project has auto-connect turned off"
+		return nil, "the project has auto-connect turned off", AutoConnect.RejectCode.AutoConnectOff
 	end
 
 	if placeId ~= 0 and serverInfo.expectedPlaceIds and table.find(serverInfo.expectedPlaceIds, placeId) then
@@ -140,16 +161,21 @@ function AutoConnect.evaluate(serverInfo, context)
 	if placeId == 0 then
 		return nil,
 			"this place is unpublished, so it has no ID to match against. "
-				.. 'Set "autoConnect": "always" in the project file, or connect once by hand to pair them.'
+				.. 'Set "autoConnect": "always" in the project file, or connect once by hand to pair them.',
+			AutoConnect.RejectCode.UnpublishedPlace
 	end
 
 	if policy == "always" then
 		return nil,
 			"the project is set to 'always', which only applies to unpublished places. "
-				.. "Add this place to servePlaceIds, or connect once by hand to pair them."
+				.. "Add this place to servePlaceIds, or connect once by hand to pair them.",
+			AutoConnect.RejectCode.AlwaysOnPublishedPlace
 	end
 
-	return nil, "nothing identifies this place as belonging to the project"
+	return nil,
+		"nothing identifies this place as belonging to the project. "
+			.. "Add this place to servePlaceIds, or connect once by hand to pair them.",
+		AutoConnect.RejectCode.NoIdentityMatch
 end
 
 --[[
@@ -236,6 +262,26 @@ function AutoConnect.parsePortRange(text)
 	return low, high
 end
 
+local function encodeQuery(fields)
+	local parts = {}
+	for _, field in fields do
+		if field[2] ~= nil then
+			table.insert(parts, string.format("%s=%s", field[1], HttpService:UrlEncode(tostring(field[2]))))
+		end
+	end
+	return "?" .. table.concat(parts, "&")
+end
+
+function AutoConnect.probeQuery(context)
+	context = context or {}
+	return encodeQuery({
+		{ "client", "roxo-plugin-probe" },
+		{ "clientVersion", Version.display(Config.version) },
+		{ "placeId", context.placeId },
+		{ "gameId", context.gameId },
+	})
+end
+
 local function baseUrlFor(host, port)
 	if string.find(host, "^https?://") then
 		return string.format("%s:%s", host, port)
@@ -250,14 +296,14 @@ end
 	Always resolves. A closed port is the common case during discovery, not an
 	error worth propagating, so it resolves to nil like any other non-candidate.
 ]]
-function AutoConnect.probe(host, port)
+function AutoConnect.probe(host, port, context)
 	local baseUrl = baseUrlFor(host, port)
 
-	-- Identify the request as a probe. Discovery contacts every candidate port
-	-- and walks away from all but one, so without this the server records a
-	-- string of anonymous clients and `roxo status` shows phantom connections
-	-- next to the real one.
-	return Http.get(baseUrl .. "/api/rojo?client=roxo-plugin-probe")
+	-- Identify the request as a probe, and say which place is looking. The
+	-- server keeps probes apart from attached clients, and the place lets
+	-- `roxo status` say "this place looked here" rather than only "something
+	-- did". Upstream Rojo ignores every one of these parameters.
+	return Http.get(baseUrl .. "/api/rojo" .. AutoConnect.probeQuery(context))
 		:andThen(Http.Response.msgpack)
 		:andThen(function(body)
 			if not validateApiInfo(body) then
@@ -320,7 +366,7 @@ function AutoConnect.discover(options)
 	local function probeAll(list)
 		local probes = {}
 		for _, port in list do
-			table.insert(probes, AutoConnect.probe(host, port))
+			table.insert(probes, AutoConnect.probe(host, port, options.context))
 		end
 		return Promise.all(probes)
 	end
@@ -413,7 +459,7 @@ function AutoConnect.classify(results, context)
 			table.insert(peerPorts, port)
 		end
 
-		local match, why = AutoConnect.evaluate(result.serverInfo, context)
+		local match, why, code = AutoConnect.evaluate(result.serverInfo, context)
 
 		if match then
 			result.match = match
@@ -422,7 +468,10 @@ function AutoConnect.classify(results, context)
 			table.insert(rejected, {
 				projectName = result.serverInfo.projectName,
 				port = result.port,
+				baseUrl = result.baseUrl,
+				serverInfo = result.serverInfo,
 				reason = why,
+				code = code,
 			})
 		end
 	end
@@ -432,6 +481,89 @@ function AutoConnect.classify(results, context)
 		rejected = rejected,
 		peerPorts = peerPorts,
 	}
+end
+
+local function supportsProbeReports(serverInfo)
+	return type(serverInfo.capabilities) == "table" and table.find(serverInfo.capabilities, "probe-report") ~= nil
+end
+
+--[[
+	Builds the reports telling each server why this place did not connect to
+	it. Kept separate from sending so the shape can be tested without HTTP.
+
+	Only servers that advertise `probe-report` get one; an upstream Rojo server
+	has no such route and must never be sent requests it does not understand.
+]]
+function AutoConnect.buildVerdicts(rejected, tied, context)
+	context = context or {}
+	local verdicts = {}
+
+	-- Sent as strings: a place ID is too large for every JSON encoder to keep
+	-- in integer form, and one written in exponent notation would be refused.
+	local placeId = if context.placeId ~= nil then tostring(context.placeId) else nil
+	local gameId = if context.gameId ~= nil then tostring(context.gameId) else nil
+
+	for _, entry in rejected or {} do
+		if supportsProbeReports(entry.serverInfo) then
+			table.insert(verdicts, {
+				baseUrl = entry.baseUrl,
+				body = {
+					placeId = placeId,
+					gameId = gameId,
+					outcome = "rejected",
+					code = entry.code,
+					reason = entry.reason,
+				},
+			})
+		end
+	end
+
+	if tied ~= nil and #tied > 1 then
+		local ports = {}
+		local names = {}
+		for _, candidate in tied do
+			table.insert(ports, tonumber(candidate.port))
+			table.insert(names, string.format("'%s' on port %s", candidate.serverInfo.projectName, candidate.port))
+		end
+
+		local reason = string.format(
+			"%d servers claim this place (%s), so none was connected. "
+				.. "Stop the others, or remove this place from their servePlaceIds.",
+			#tied,
+			table.concat(names, ", ")
+		)
+
+		for _, candidate in tied do
+			if supportsProbeReports(candidate.serverInfo) then
+				table.insert(verdicts, {
+					baseUrl = candidate.baseUrl,
+					body = {
+						placeId = placeId,
+						gameId = gameId,
+						outcome = "ambiguous",
+						code = AutoConnect.RejectCode.Ambiguous,
+						reason = reason,
+						conflictingPorts = ports,
+					},
+				})
+			end
+		end
+	end
+
+	return verdicts
+end
+
+--[[
+	Tells each server why this place did not connect to it, so an agent asking
+	`roxo status` sees the reason instead of it staying in Studio's Output.
+	Fire and forget: a failed report must never affect discovery.
+]]
+function AutoConnect.reportVerdicts(rejected, tied, context)
+	for _, verdict in AutoConnect.buildVerdicts(rejected, tied, context) do
+		Http.post(verdict.baseUrl .. "/api/roxo/probe-report", Http.jsonEncode(verdict.body)):catch(function(err)
+			Log.trace("Could not report auto-connect verdict to {}: {}", verdict.baseUrl, tostring(err))
+		end)
+	end
 end
 
 return AutoConnect

@@ -33,7 +33,9 @@ mod web;
 // TODO: Work out what we should expose publicly
 
 pub use auto_connect::{derive_project_id, AutoConnectPolicy};
-pub use client_registry::{ClientHandshake, ClientId, ClientInfo, ClientRegistry};
+pub use client_registry::{
+    ClientHandshake, ClientId, ClientInfo, ClientRegistry, ProbeInfo, ProbeVerdict,
+};
 pub use project::*;
 pub use rojo_ref::*;
 pub use session_id::SessionId;

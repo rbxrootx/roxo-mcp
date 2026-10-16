@@ -147,13 +147,7 @@ fn show_status(status: &SessionStatusResponse, color: termcolor::ColorChoice) ->
         buffer.set_color(&ColorSpec::new())?;
 
         for client in &status.clients {
-            let place = match client.place_id {
-                // An unpublished place reports 0, which is worth spelling out
-                // because it is also the reason strict matching cannot apply.
-                Some(0) => "unpublished place".to_owned(),
-                Some(id) => format!("place {id}"),
-                None => "unknown place".to_owned(),
-            };
+            let place = describe_place(client.place_id);
 
             let how = if client.auto_connected {
                 match &client.match_reason {
@@ -175,7 +169,51 @@ fn show_status(status: &SessionStatusResponse, color: termcolor::ColorChoice) ->
         }
     }
 
+    if !status.recent_probes.is_empty() {
+        writeln!(&mut buffer)?;
+        buffer.set_color(&bold)?;
+        writeln!(&mut buffer, "Studio places that looked here")?;
+        buffer.set_color(&ColorSpec::new())?;
+
+        let now = now_secs();
+        for probe in &status.recent_probes {
+            writeln!(
+                &mut buffer,
+                "  {} - last probed {} ago ({} probe{})",
+                describe_place(probe.place_id),
+                format_duration(now.saturating_sub(probe.last_probe_at)),
+                probe.probe_count,
+                if probe.probe_count == 1 { "" } else { "s" }
+            )?;
+
+            if let Some(verdict) = &probe.verdict {
+                buffer.set_color(&yellow)?;
+                write!(&mut buffer, "    {}", verdict.outcome)?;
+                buffer.set_color(&ColorSpec::new())?;
+                writeln!(&mut buffer, ": {}", verdict.reason)?;
+            }
+        }
+    }
+
     writer.print(&buffer)
+}
+
+/// Names a place the way an operator thinks of it. An unpublished place
+/// reports 0, which is worth spelling out because it is also the reason
+/// strict matching cannot apply.
+pub(super) fn describe_place(place_id: Option<u64>) -> String {
+    match place_id {
+        Some(0) => "unpublished place".to_owned(),
+        Some(id) => format!("place {id}"),
+        None => "unknown place".to_owned(),
+    }
+}
+
+pub(super) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn format_duration(seconds: u64) -> String {
