@@ -15,6 +15,7 @@ use rbx_dom_weak::{
 use crate::{
     client_registry::{ClientHandshake, ClientId},
     serve_session::ServeSession,
+    session_registry,
     snapshot::{InstanceWithMeta, PatchSet, PatchUpdate},
     web::{
         interface::{
@@ -121,6 +122,7 @@ impl ApiService {
             project_path: self.serve_session.project_path().display().to_string(),
             capabilities: capabilities(),
             client_id: Some(client_id),
+            peer_ports: session_registry::peer_ports(self.serve_session.session_id()),
         })
     }
 

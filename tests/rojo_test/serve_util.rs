@@ -76,6 +76,16 @@ pub struct TestServeSession {
 
 impl TestServeSession {
     pub fn new(name: &str) -> Self {
+        Self::spawn(name, None)
+    }
+
+    /// Starts a session that advertises into the given registry directory, so
+    /// several sessions in one test can see each other as peers.
+    pub fn new_with_home(name: &str, roxo_home: &Path) -> Self {
+        Self::spawn(name, Some(roxo_home))
+    }
+
+    fn spawn(name: &str, roxo_home: Option<&Path>) -> Self {
         let working_dir = get_working_dir_path();
 
         let source_path = Path::new(SERVE_TESTS_PATH).join(name);
@@ -129,7 +139,7 @@ impl TestServeSession {
             // to itself the server advertises into the developer's real
             // ~/.roxo, so a test run litters their machine with beacons for
             // servers that no longer exist.
-            .env("ROXO_HOME", dir.path())
+            .env("ROXO_HOME", roxo_home.unwrap_or(dir.path()))
             .stdout(log)
             .stderr(log_err)
             .spawn()

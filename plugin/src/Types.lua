@@ -50,6 +50,7 @@ local ApiInfoResponse = t.interface({
 	projectPath = t.optional(t.string),
 	capabilities = t.optional(t.array(t.string)),
 	clientId = t.optional(t.number),
+	peerPorts = t.optional(t.array(t.number)),
 })
 
 local ApiReadResponse = t.interface({

@@ -35,6 +35,9 @@ return strict("Config", {
 	defaultPortRangeText = "34370-34379, 34872-34881",
 	legacyPortRangeText = "34872-34881",
 	maxPortRangeSize = 32,
+	-- How many ports learned from servers' `peerPorts` are probed per poll.
+	-- Matches the server's own cap.
+	maxPeerPorts = 16,
 
 	-- Discovery starts eager, because the common case is an agent that just
 	-- started a server and is waiting on the connection, then backs off so an

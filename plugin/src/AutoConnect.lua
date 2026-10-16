@@ -311,39 +311,127 @@ function AutoConnect.discover(options)
 		end
 	end
 
-	local probes = {}
-	for _, port in ports do
-		table.insert(probes, AutoConnect.probe(host, port))
+	-- Peers learned on an earlier poll, so a session outside the ranges stays
+	-- found even if the server that pointed at it has since stopped.
+	for _, port in AutoConnect.extraPorts(options.knownPeerPorts, seen) do
+		table.insert(ports, port)
 	end
 
-	return Promise.all(probes):andThen(function(results)
-		local candidates = {}
-		local rejected = {}
+	local function probeAll(list)
+		local probes = {}
+		for _, port in list do
+			table.insert(probes, AutoConnect.probe(host, port))
+		end
+		return Promise.all(probes)
+	end
 
-		for _, result in results do
-			if result == nil then
-				continue
+	return probeAll(ports)
+		:andThen(function(results)
+			-- Every Roxo server lists the other sessions on its machine, so one
+			-- extra round reaches all of them. Servers found this way are judged
+			-- by exactly the same rules as any other.
+			local peerPorts = AutoConnect.collectPeerPorts(results, seen)
+			if #peerPorts == 0 then
+				return results
 			end
 
-			local match, why = AutoConnect.evaluate(result.serverInfo, options.context)
+			return probeAll(peerPorts):andThen(function(peerResults)
+				-- Both lists have holes where ports were closed, so they are
+				-- merged into a fresh list rather than appended in place.
+				local merged = {}
+				for _, list in { results, peerResults } do
+					for _, result in list do
+						table.insert(merged, result)
+					end
+				end
+				return merged
+			end)
+		end)
+		:andThen(function(results)
+			return AutoConnect.classify(results, options.context)
+		end)
+end
 
-			if match then
-				result.match = match
-				table.insert(candidates, result)
-			else
-				table.insert(rejected, {
-					projectName = result.serverInfo.projectName,
-					port = result.port,
-					reason = why,
-				})
+--[[
+	Returns the ports in `list` not already marked in `seen`, marking them.
+]]
+function AutoConnect.extraPorts(list, seen)
+	local ports = {}
+	if type(list) ~= "table" then
+		return ports
+	end
+
+	for _, port in list do
+		port = tonumber(port)
+		if port and port % 1 == 0 and port >= 1 and port <= 65535 and not seen[port] then
+			seen[port] = true
+			table.insert(ports, port)
+		end
+	end
+	return ports
+end
+
+--[[
+	Gathers the `peerPorts` advertised by every server that answered, skipping
+	ports already probed. Capped, because the list comes from a server and a
+	poll should never turn into an unbounded burst of requests.
+]]
+function AutoConnect.collectPeerPorts(results, seen)
+	local ports = {}
+	for _, result in results do
+		if result ~= nil and type(result.serverInfo.peerPorts) == "table" then
+			for _, port in AutoConnect.extraPorts(result.serverInfo.peerPorts, seen) do
+				if #ports >= Config.maxPeerPorts then
+					return ports
+				end
+				table.insert(ports, port)
 			end
 		end
+	end
+	return ports
+end
 
-		return {
-			candidates = candidates,
-			rejected = rejected,
-		}
-	end)
+--[[
+	Splits probe results into servers this place may attach to and servers it
+	may not, with the reason for each rejection. Also returns every peer port
+	the servers advertised, so the caller can keep probing them on later polls.
+]]
+function AutoConnect.classify(results, context)
+	local candidates = {}
+	local rejected = {}
+	local peerPorts = {}
+	local seenPeers = {}
+
+	-- Iterated with pairs semantics on purpose: a closed port resolves to nil,
+	-- so the result list has holes.
+	for _, result in results do
+		if result == nil then
+			continue
+		end
+
+		for _, port in AutoConnect.extraPorts(result.serverInfo.peerPorts, seenPeers) do
+			table.insert(peerPorts, port)
+		end
+
+		local match, why = AutoConnect.evaluate(result.serverInfo, context)
+
+		if match then
+			result.match = match
+			table.insert(candidates, result)
+		else
+			table.insert(rejected, {
+				projectName = result.serverInfo.projectName,
+				port = result.port,
+				reason = why,
+			})
+		end
+	end
+
+	return {
+		candidates = candidates,
+		rejected = rejected,
+		peerPorts = peerPorts,
+	}
 end
 
 return AutoConnect

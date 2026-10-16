@@ -942,3 +942,26 @@ fn removing_a_directory_of_files_does_not_kill_the_server() {
             .expect("the server died after its synced directory was replaced");
     });
 }
+
+/// The plugin cannot read the session registry, so each server hands it the
+/// ports of the others. Finding any one session must reveal the rest, and a
+/// server must never list itself.
+#[test]
+fn handshake_lists_the_other_sessions_as_peers() {
+    let home = tempdir().unwrap();
+
+    let mut first = TestServeSession::new_with_home("empty", home.path());
+    let mut second = TestServeSession::new_with_home("empty", home.path());
+
+    let first_info = first.wait_to_come_online();
+    let second_info = second.wait_to_come_online();
+
+    assert_eq!(first_info.server_name, "roxo");
+
+    // Both beacons exist by the time either server answers, but the first
+    // handshake above may have raced the second server's start, so ask again.
+    let first_info = first.get_api_rojo().unwrap();
+
+    assert_eq!(first_info.peer_ports, vec![second.port() as u16]);
+    assert_eq!(second_info.peer_ports, vec![first.port() as u16]);
+}

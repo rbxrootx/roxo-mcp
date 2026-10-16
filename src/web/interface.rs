@@ -207,6 +207,13 @@ pub struct ServerInfoResponse {
     /// echoes back when it opens its change subscription so the two can be
     /// recognized as the same session.
     pub client_id: Option<ClientId>,
+
+    /// Ports of the other Roxo sessions on this machine. The plugin cannot read
+    /// the session registry, so this is how it finds a session outside the
+    /// ports it scans. Omitted when empty, which keeps the handshake unchanged
+    /// for the common single-session case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_ports: Vec<u16>,
 }
 
 /// Response body from `/api/roxo/status`.

@@ -151,6 +151,56 @@ return function()
 		end)
 	end)
 
+	describe("peer ports", function()
+		it("should collect advertised ports that were not already probed", function()
+			local seen = { [34375] = true }
+			local results = {
+				{ port = "34375", serverInfo = serverInfo({ peerPorts = { 34374, 34375, 40000 } }) },
+				{ port = "34374", serverInfo = serverInfo({ peerPorts = { 40000 } }) },
+			}
+
+			local ports = AutoConnect.collectPeerPorts(results, seen)
+
+			expect(#ports).to.equal(2)
+			expect(ports[1]).to.equal(34374)
+			expect(ports[2]).to.equal(40000)
+		end)
+
+		it("should ignore malformed and out-of-range ports", function()
+			local ports = AutoConnect.extraPorts({ "x", -1, 0, 70000, 34375 }, {})
+
+			expect(#ports).to.equal(1)
+			expect(ports[1]).to.equal(34375)
+		end)
+
+		it("should cap how many peer ports one poll probes", function()
+			local many = {}
+			for port = 40000, 40000 + Config.maxPeerPorts * 2 do
+				table.insert(many, port)
+			end
+
+			local ports = AutoConnect.collectPeerPorts({ { serverInfo = serverInfo({ peerPorts = many }) } }, {})
+
+			expect(#ports).to.equal(Config.maxPeerPorts)
+		end)
+
+		it("should judge a server found through a peer by the same rules", function()
+			-- Finding a server through another one's peer list is only a new
+			-- place to look. It must not make that server any easier to accept.
+			local results = {}
+			results[3] = {
+				port = "40000",
+				serverInfo = serverInfo({ expectedPlaceIds = { 999 }, peerPorts = { 34375 } }),
+			}
+
+			local result = AutoConnect.classify(results, { placeId = 123 })
+
+			expect(#result.candidates).to.equal(0)
+			expect(#result.rejected).to.equal(1)
+			expect(result.peerPorts[1]).to.equal(34375)
+		end)
+	end)
+
 	describe("parsePortRanges", function()
 		it("should parse several ranges and single ports", function()
 			local ranges = AutoConnect.parsePortRanges("34370-34379, 34872-34881,40000")

@@ -33,6 +33,7 @@ Making a new release? Simply add the new header with the version and date undern
 
 * Building from a source checkout now fails with a clear recovery command when plugin dependency submodules are missing, instead of packaging a plugin that crashes in Studio.
 * Auto-connect now scans a list of port ranges, defaulting to `34370-34379, 34872-34881`. A server outside the old single range was never discovered, so a place that its project named in `servePlaceIds` still sat unconnected. The old saved default is upgraded automatically.
+* The server handshake now lists the ports of the other Roxo sessions on the machine as `peerPorts`, and the plugin probes them too. Once Studio finds any one Roxo server it finds them all, whatever port they are on. This only adds places to look: every server found this way passes the same identity check. Omitted when there are no other sessions, so the handshake is unchanged for upstream Rojo.
 
 ## [7.7.0+roxo.1] (September 8, 2026)
 

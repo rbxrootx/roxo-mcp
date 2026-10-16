@@ -504,9 +504,17 @@ function App:tryAutoConnect()
 		host = host,
 		portRange = Settings:get("autoConnectPortRange"),
 		preferredPort = self.port:getValue(),
+		knownPeerPorts = self.knownPeerPorts,
 		context = self:getAutoConnectContext(),
 	})
 		:andThen(function(result)
+			-- Only replaced when some server answered: with every server gone
+			-- there is no fresher list, and the old one is what still points
+			-- at a session outside the scanned ranges.
+			if #result.candidates + #result.rejected > 0 then
+				self.knownPeerPorts = result.peerPorts
+			end
+
 			local chosen, tied = AutoConnect.choose(result.candidates)
 
 			if chosen == nil then

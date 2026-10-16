@@ -144,6 +144,48 @@ pub fn list() -> anyhow::Result<Vec<SessionBeacon>> {
     Ok(sessions)
 }
 
+/// The most peer ports a server advertises. Each one costs the plugin a request
+/// on every discovery poll, so a registry full of stale beacons must not turn
+/// into a burst Studio's HTTP limits push back on.
+const MAX_PEER_PORTS: usize = 16;
+
+/// Ports of the other sessions advertised on this machine, for the Studio
+/// plugin, which cannot read this directory itself.
+///
+/// Once the plugin reaches any one server it learns where the rest are, so a
+/// session on a port outside the plugin's scan ranges is still found. This only
+/// adds places to look; every server found this way goes through the same
+/// identity check as one found by scanning.
+///
+/// Called on every handshake, so it trusts the beacons rather than checking
+/// each process: on Windows that check spawns `tasklist`. A beacon left behind
+/// by a crashed server costs the plugin one refused connection, and the next
+/// `list` prunes it.
+pub fn peer_ports(own_session: SessionId) -> Vec<u16> {
+    let Ok(dir) = sessions_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut ports: Vec<u16> = entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return None;
+            }
+            let beacon: SessionBeacon = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            (beacon.session_id != own_session).then_some(beacon.port)
+        })
+        .collect();
+
+    ports.sort_unstable();
+    ports.dedup();
+    ports.truncate(MAX_PEER_PORTS);
+    ports
+}
+
 /// Finds a single session, optionally narrowed by port or project path.
 ///
 /// Returns an error rather than a guess when the filter is ambiguous. Picking
