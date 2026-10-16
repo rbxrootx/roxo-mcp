@@ -13,7 +13,7 @@ local StudioPluginGui = require(Plugin.App.Components.Studio.StudioPluginGui)
 local Header = require(Plugin.App.Components.Header)
 local IconButton = require(Plugin.App.Components.IconButton)
 local TextButton = require(Plugin.App.Components.TextButton)
-local BorderedContainer = require(Plugin.App.Components.BorderedContainer)
+local ConnectionSummary = require(Plugin.App.Components.ConnectionSummary)
 local Tooltip = require(Plugin.App.Components.Tooltip)
 local PatchVisualizer = require(Plugin.App.Components.PatchVisualizer)
 local StringDiffVisualizer = require(Plugin.App.Components.StringDiffVisualizer)
@@ -204,61 +204,6 @@ function ChangesViewer:render()
 	end)
 end
 
-local function ConnectionDetails(props)
-	return Theme.with(function(theme)
-		return e(BorderedContainer, {
-			transparency = props.transparency,
-			size = UDim2.new(1, 0, 0, 70),
-			layoutOrder = props.layoutOrder,
-		}, {
-			TextContainer = e("Frame", {
-				Size = UDim2.new(1, 0, 1, 0),
-				BackgroundTransparency = 1,
-			}, {
-				ProjectName = e("TextLabel", {
-					Text = props.projectName,
-					FontFace = theme.Font.Bold,
-					TextSize = theme.TextSize.Large,
-					TextColor3 = theme.ConnectionDetails.ProjectNameColor,
-					TextTransparency = props.transparency,
-					TextXAlignment = Enum.TextXAlignment.Left,
-
-					Size = UDim2.new(1, 0, 0, theme.TextSize.Large),
-
-					LayoutOrder = 1,
-					BackgroundTransparency = 1,
-				}),
-
-				Address = e("TextLabel", {
-					Text = props.address,
-					FontFace = theme.Font.Code,
-					TextSize = theme.TextSize.Medium,
-					TextColor3 = theme.ConnectionDetails.AddressColor,
-					TextTransparency = props.transparency,
-					TextXAlignment = Enum.TextXAlignment.Left,
-
-					Size = UDim2.new(1, 0, 0, theme.TextSize.Medium),
-
-					LayoutOrder = 2,
-					BackgroundTransparency = 1,
-				}),
-
-				Layout = e("UIListLayout", {
-					VerticalAlignment = Enum.VerticalAlignment.Center,
-					FillDirection = Enum.FillDirection.Vertical,
-					SortOrder = Enum.SortOrder.LayoutOrder,
-					Padding = UDim.new(0, 6),
-				}),
-			}),
-
-			Padding = e("UIPadding", {
-				PaddingLeft = UDim.new(0, 17),
-				PaddingRight = UDim.new(0, 15),
-			}),
-		})
-	end)
-end
-
 local ConnectedPage = Roact.Component:extend("ConnectedPage")
 
 function ConnectedPage:getChangeInfoText()
@@ -433,13 +378,15 @@ function ConnectedPage:render()
 				}),
 			}),
 
-			ConnectionDetails = e(ConnectionDetails, {
+			ConnectionDetails = e(ConnectionSummary, {
 				projectName = self.state.projectName,
 				address = self.state.address,
+				projectPath = self.state.projectPath,
+				placeId = self.state.placeId,
+				autoConnected = self.state.autoConnected,
+				matchReason = self.state.matchReason,
 				transparency = self.props.transparency,
 				layoutOrder = 2,
-
-				onDisconnect = self.props.onDisconnect,
 			}),
 
 			Buttons = e("Frame", {
@@ -622,6 +569,10 @@ function ConnectedPage.getDerivedStateFromProps(props)
 	return {
 		projectName = props.projectName,
 		address = props.address,
+		projectPath = props.projectPath,
+		placeId = props.placeId,
+		autoConnected = props.autoConnected,
+		matchReason = props.matchReason,
 	}
 end
 

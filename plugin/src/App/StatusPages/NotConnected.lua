@@ -11,6 +11,7 @@ local BorderedContainer = require(Plugin.App.Components.BorderedContainer)
 local TextButton = require(Plugin.App.Components.TextButton)
 local Header = require(Plugin.App.Components.Header)
 local Tooltip = require(Plugin.App.Components.Tooltip)
+local DiscoveryStatus = require(Plugin.App.Components.DiscoveryStatus)
 
 local PORT_WIDTH = 74
 local DIVIDER_WIDTH = 1
@@ -142,6 +143,12 @@ function NotConnectedPage:render()
 				SortOrder = Enum.SortOrder.LayoutOrder,
 				Padding = UDim.new(0, 10),
 			}),
+		}),
+
+		DiscoveryStatus = e(DiscoveryStatus, {
+			discovery = self.props.discovery,
+			transparency = self.props.transparency,
+			layoutOrder = 4,
 		}),
 
 		Layout = e("UIListLayout", {

@@ -137,6 +137,7 @@ function App:init()
 		},
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
+		discovery = if Settings:get("autoConnect") then self:searchingDiscovery() else { status = "off" },
 	})
 
 	if RunService:IsEdit() then
@@ -175,8 +176,10 @@ function App:init()
 
 		self.disconnectAutoConnectChanged = Settings:onChanged("autoConnect", function(enabled)
 			if enabled then
+				self:setDiscovery(self:searchingDiscovery())
 				self:startAutoConnectPolling()
 			else
+				self:setDiscovery({ status = "off" })
 				self:stopAutoConnectPolling()
 			end
 		end)
@@ -524,6 +527,8 @@ function App:tryAutoConnect()
 			AutoConnect.reportVerdicts(result.rejected, tied, context)
 
 			if chosen == nil then
+				self:setDiscovery(self:describeDiscovery(result, tied))
+
 				if #tied > 1 then
 					self:reportAmbiguousAutoConnect(tied)
 				else
@@ -549,16 +554,6 @@ function App:tryAutoConnect()
 			self.setHost(chosen.host)
 			self.setPort(chosen.port)
 
-			self:addNotification({
-				text = string.format(
-					"Auto-connected to '%s' at %s:%s.",
-					chosen.serverInfo.projectName,
-					chosen.host,
-					chosen.port
-				),
-				timeout = 8,
-			})
-
 			self:startSession({
 				host = chosen.host,
 				port = chosen.port,
@@ -572,6 +567,60 @@ function App:tryAutoConnect()
 			Log.trace("Auto-connect discovery failed: {}", tostring(err))
 			return false
 		end)
+end
+
+function App:searchingDiscovery()
+	return {
+		status = "searching",
+		scanning = Settings:get("autoConnectPortRange") or Config.defaultPortRangeText,
+	}
+end
+
+--[[
+	Summarizes a discovery round for the not-connected page.
+]]
+function App:describeDiscovery(result, tied)
+	local scanning = Settings:get("autoConnectPortRange") or Config.defaultPortRangeText
+	if #result.peerPorts > 0 then
+		scanning = string.format("%s, plus %d peer port(s)", scanning, #result.peerPorts)
+	end
+
+	local servers = {}
+	local status = "searching"
+
+	if #tied > 1 then
+		status = "ambiguous"
+		for _, candidate in tied do
+			table.insert(servers, { projectName = candidate.serverInfo.projectName, port = candidate.port })
+		end
+	elseif #result.rejected > 0 then
+		status = "declined"
+		for _, entry in result.rejected do
+			table.insert(servers, { projectName = entry.projectName, port = entry.port, reason = entry.reason })
+		end
+	end
+
+	return { status = status, scanning = scanning, servers = servers }
+end
+
+--[[
+	Updates the discovery summary, skipping the render when nothing changed,
+	since discovery repeats every few seconds and usually finds the same thing.
+]]
+function App:setDiscovery(discovery)
+	local signature = if discovery == nil then "" else discovery.status .. "|" .. (discovery.scanning or "")
+	for _, server in (discovery and discovery.servers) or {} do
+		signature ..= string.format("|%s:%s:%s", tostring(server.projectName), server.port, server.reason or "")
+	end
+
+	if self.discoverySignature == signature then
+		return
+	end
+	self.discoverySignature = signature
+
+	self:setState({
+		discovery = if discovery == nil then Roact.None else discovery,
+	})
 end
 
 --[[
@@ -1011,9 +1060,13 @@ function App:startSession(options)
 				appStatus = AppStatus.Connecting,
 				toolbarIcon = Assets.Images.PluginButton,
 			})
-			self:addNotification({
-				text = "Connecting to session...",
-			})
+			-- An auto-connect gets one notification, once it has worked;
+			-- "connecting" then "connected" seconds apart is just noise.
+			if not options.autoConnected then
+				self:addNotification({
+					text = "Connecting to session...",
+				})
+			end
 		elseif status == ServeSession.Status.Connected then
 			self.knownProjects[details] = true
 			self:setPriorSyncInfo(host, port, details)
@@ -1021,14 +1074,30 @@ function App:startSession(options)
 			self:setPairing(serveSession.__apiContext, host, port)
 
 			local address = ("%s:%s"):format(host, port)
+			local serverInfo = serveSession.__apiContext.__serverInfo
+			-- Reset now so that after a disconnect the page says it is looking
+			-- again, rather than showing what discovery found before this.
+			self:setDiscovery(if Settings:get("autoConnect") then self:searchingDiscovery() else { status = "off" })
 			self:setState({
 				appStatus = AppStatus.Connected,
 				projectName = details,
 				address = address,
+				projectPath = if serverInfo and serverInfo.projectPath then serverInfo.projectPath else Roact.None,
+				placeId = game.PlaceId,
+				autoConnected = options.autoConnected == true,
+				matchReason = options.matchReason or Roact.None,
 				toolbarIcon = Assets.Images.PluginButtonConnected,
 			})
 			self:addNotification({
-				text = string.format("Connected to session '%s' at %s.", details, address),
+				text = if options.autoConnected
+					then string.format(
+						"Auto-connected to '%s' at %s.\nMatched by %s.",
+						details,
+						address,
+						AutoConnect.describeMatch(options.matchReason)
+					)
+					else string.format("Connected to session '%s' at %s.", details, address),
+				timeout = if options.autoConnected then 8 else nil,
 			})
 		elseif status == ServeSession.Status.Disconnected then
 			self.serveSession = nil
@@ -1245,6 +1314,7 @@ function App:render()
 					Tooltips = e(Tooltip.Container, nil),
 
 					NotConnectedPage = createPageElement(AppStatus.NotConnected, {
+						discovery = self.state.discovery,
 						host = self.host,
 						onHostChange = self.setHost,
 						port = self.port,
@@ -1285,6 +1355,10 @@ function App:render()
 					Connected = createPageElement(AppStatus.Connected, {
 						projectName = self.state.projectName,
 						address = self.state.address,
+						projectPath = self.state.projectPath,
+						placeId = self.state.placeId,
+						autoConnected = self.state.autoConnected,
+						matchReason = self.state.matchReason,
 						patchTree = self.state.patchTree,
 						patchData = self.state.patchData,
 						serveSession = self.serveSession,

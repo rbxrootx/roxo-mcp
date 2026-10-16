@@ -67,6 +67,20 @@ AutoConnect.RejectCode = {
 	Ambiguous = "ambiguous",
 }
 
+local MATCH_DESCRIPTIONS = {
+	[AutoConnect.MatchReason.ServePlaceIds] = "servePlaceIds listing this place",
+	[AutoConnect.MatchReason.GameId] = "the project's gameId",
+	[AutoConnect.MatchReason.Paired] = "an earlier manual connection",
+	[AutoConnect.MatchReason.Declared] = '"autoConnect": "always" (unpublished place)',
+}
+
+--[[
+	Says in words why a place matched, for notifications.
+]]
+function AutoConnect.describeMatch(reason)
+	return MATCH_DESCRIPTIONS[reason] or tostring(reason)
+end
+
 local REASON_STRENGTH = {
 	[AutoConnect.MatchReason.ServePlaceIds] = 4,
 	[AutoConnect.MatchReason.GameId] = 3,
