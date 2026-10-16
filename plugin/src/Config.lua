@@ -29,6 +29,11 @@ return strict("Config", {
 	-- is enough for the handful of projects anyone serves at once, and small
 	-- enough that repeated polling stays well inside Studio's HTTP limits.
 	defaultPortRange = { min = 34872, max = 34881 },
+	-- Rojo's range plus 34370-34379, where `roxo serve` sessions are commonly
+	-- run side by side; a server outside every range is never found.
+	defaultPortRanges = { { min = 34370, max = 34379 }, { min = 34872, max = 34881 } },
+	defaultPortRangeText = "34370-34379, 34872-34881",
+	legacyPortRangeText = "34872-34881",
 	maxPortRangeSize = 32,
 
 	-- Discovery starts eager, because the common case is an agent that just

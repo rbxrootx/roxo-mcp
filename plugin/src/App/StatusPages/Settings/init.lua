@@ -106,29 +106,35 @@ function SettingsPage:render()
 			AutoConnectPortRange = e(Setting, {
 				id = "autoConnectPortRange",
 				name = "Auto Connect Ports",
-				description = "The range of ports searched when looking for a server",
+				description = "Ports searched when looking for a server. Separate ranges with commas, e.g. 34370-34379, 34872-34881",
 				transparency = self.props.transparency,
 				layoutOrder = layoutIncrement(),
 				visible = Settings:getBinding("autoConnect"),
 				input = e(TextInput, {
-					size = UDim2.new(0, 110, 0, 28),
+					size = UDim2.new(0, 180, 0, 28),
 					text = Settings:getBinding("autoConnectPortRange"),
 					transparency = self.props.transparency,
 					enabled = true,
 					onEntered = function(text)
-						local low, high = string.match(text, "^%s*(%d+)%s*%-%s*(%d+)%s*$")
-
-						if low and high and tonumber(low) <= tonumber(high) then
-							Settings:set("autoConnectPortRange", string.format("%s-%s", low, high))
-						else
-							local single = string.match(text, "^%s*(%d+)%s*$")
-
-							if single then
-								Settings:set("autoConnectPortRange", single)
+						local parts = {}
+						for part in string.gmatch(text, "[^,]+") do
+							local low, high = string.match(part, "^%s*(%d+)%s*%-%s*(%d+)%s*$")
+							local single = string.match(part, "^%s*(%d+)%s*$")
+							if low and high and tonumber(low) <= tonumber(high) then
+								table.insert(parts, string.format("%s-%s", low, high))
+							elseif single then
+								table.insert(parts, single)
 							else
-								-- Force text back to last valid value
-								Settings:set("autoConnectPortRange", Settings:get("autoConnectPortRange"))
+								parts = nil
+								break
 							end
+						end
+
+						if parts and #parts > 0 then
+							Settings:set("autoConnectPortRange", table.concat(parts, ", "))
+						else
+							-- Force text back to last valid value
+							Settings:set("autoConnectPortRange", Settings:get("autoConnectPortRange"))
 						end
 					end,
 				}),

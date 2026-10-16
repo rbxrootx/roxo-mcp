@@ -19,7 +19,7 @@ local defaultSettings = {
 	-- makes Roxo usable from an AI agent, which can start a server but cannot
 	-- click a button in Studio.
 	autoConnect = true,
-	autoConnectPortRange = "34872-34881",
+	autoConnectPortRange = "34370-34379, 34872-34881",
 	-- Places paired with a project by a previous connection, keyed by place ID.
 	pairedProjects = {},
 	showNotifications = true,

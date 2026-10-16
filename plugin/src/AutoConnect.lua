@@ -173,6 +173,35 @@ function AutoConnect.choose(candidates)
 end
 
 --[[
+	Parses a comma-separated list of ranges like "34370-34379, 34872-34881".
+
+	A single range cannot cover both Rojo's historical ports and the ports
+	people actually serve on, and a server outside the scan is invisible no
+	matter how well its project identifies the place.
+]]
+function AutoConnect.parsePortRanges(text)
+	-- The old single-range default was saved by earlier versions; treat it as
+	-- unset so those installs pick up the wider default.
+	if type(text) == "string" and string.gsub(text, "%s", "") == Config.legacyPortRangeText then
+		text = Config.defaultPortRangeText
+	end
+
+	local ranges = {}
+	if type(text) == "string" then
+		for part in string.gmatch(text, "[^,]+") do
+			local low, high = AutoConnect.parsePortRange(part)
+			table.insert(ranges, { low = low, high = high })
+		end
+	end
+	if #ranges == 0 then
+		for _, range in Config.defaultPortRanges do
+			table.insert(ranges, { low = range.min, high = range.max })
+		end
+	end
+	return ranges
+end
+
+--[[
 	Parses a port range like "34872-34881" into its bounds.
 
 	Falls back to the default range rather than erroring, because a typo in a
@@ -256,9 +285,9 @@ end
 ]]
 function AutoConnect.discover(options)
 	local host = options.host or Config.defaultHost
-	local low, high = AutoConnect.parsePortRange(options.portRange)
 
 	local ports = {}
+	local seen = {}
 
 	-- The user's configured port goes first so that it is probed even when it
 	-- sits outside the scanned range.
@@ -270,11 +299,15 @@ function AutoConnect.discover(options)
 
 	if preferredPort then
 		table.insert(ports, preferredPort)
+		seen[preferredPort] = true
 	end
 
-	for port = low, high do
-		if port ~= preferredPort then
-			table.insert(ports, port)
+	for _, range in AutoConnect.parsePortRanges(options.portRange) do
+		for port = range.low, range.high do
+			if not seen[port] then
+				seen[port] = true
+				table.insert(ports, port)
+			end
 		end
 	end
 

@@ -151,6 +151,32 @@ return function()
 		end)
 	end)
 
+	describe("parsePortRanges", function()
+		it("should parse several ranges and single ports", function()
+			local ranges = AutoConnect.parsePortRanges("34370-34379, 34872-34881,40000")
+
+			expect(#ranges).to.equal(3)
+			expect(ranges[1].low).to.equal(34370)
+			expect(ranges[1].high).to.equal(34379)
+			expect(ranges[2].low).to.equal(34872)
+			expect(ranges[3].low).to.equal(40000)
+			expect(ranges[3].high).to.equal(40000)
+		end)
+
+		it("should upgrade the old single-range default", function()
+			local ranges = AutoConnect.parsePortRanges("34872-34881")
+
+			expect(#ranges).to.equal(#Config.defaultPortRanges)
+			expect(ranges[1].low).to.equal(Config.defaultPortRanges[1].min)
+		end)
+
+		it("should fall back to the defaults when given nothing", function()
+			local ranges = AutoConnect.parsePortRanges(nil)
+
+			expect(#ranges).to.equal(#Config.defaultPortRanges)
+		end)
+	end)
+
 	describe("parsePortRange", function()
 		it("should parse a range", function()
 			local low, high = AutoConnect.parsePortRange("34872-34881")
