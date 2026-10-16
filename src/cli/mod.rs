@@ -1,6 +1,7 @@
 //! Defines Rojo's CLI through clap types.
 
 mod build;
+mod diagnose;
 mod doc;
 mod fmt_project;
 mod init;

@@ -7,7 +7,11 @@ use std::{
 
 use clap::Parser;
 
-use super::{status::fetch_status, GlobalOptions};
+use super::{
+    diagnose::{diagnose, Diagnosis},
+    status::fetch_session_status,
+    GlobalOptions,
+};
 
 /// How often to re-check. Fast enough that an agent does not sit idle after
 /// Studio attaches, slow enough not to spin a core while waiting.
@@ -70,10 +74,13 @@ impl WaitCommand {
     pub fn run(self, _global: GlobalOptions) -> anyhow::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(self.timeout);
         let mut last_error = None;
+        let mut last_diagnosis = None;
 
         loop {
-            match fetch_status(self.port, self.project.as_deref()) {
-                Ok(status) => {
+            match fetch_session_status(self.port, self.project.as_deref()) {
+                Ok((session, status)) => {
+                    last_diagnosis = Some(diagnose(&status, Some(session.port)));
+
                     let satisfied = match self.condition {
                         WaitCondition::Server => true,
                         WaitCondition::Studio => status.studio_connected,
@@ -122,17 +129,38 @@ impl WaitCommand {
                     .map(|err| format!("\nLast attempt: {err:#}"))
                     .unwrap_or_default()
             ),
-            WaitCondition::Studio => anyhow::bail!(
-                "Timed out after {}s waiting for Studio to connect.\n\
-                 Check that the place is open in Studio, that the Roxo plugin is installed, \
-                 and that auto-connect is not set to 'off' for this project.{}",
-                self.timeout,
-                last_error
-                    .map(|err| format!("\nLast attempt: {err:#}"))
-                    .unwrap_or_default()
-            ),
+            WaitCondition::Studio => match last_diagnosis {
+                Some(diagnosis) => anyhow::bail!(
+                    "Timed out after {}s waiting for Studio to connect.\n{}",
+                    self.timeout,
+                    describe(&diagnosis)
+                ),
+                None => anyhow::bail!(
+                    "Timed out after {}s waiting for Studio to connect.\n\
+                     Check that the place is open in Studio, that the Roxo plugin is installed, \
+                     and that auto-connect is not set to 'off' for this project.{}",
+                    self.timeout,
+                    last_error
+                        .map(|err| format!("\nLast attempt: {err:#}"))
+                        .unwrap_or_default()
+                ),
+            },
         }
     }
+}
+
+fn describe(diagnosis: &Diagnosis) -> String {
+    let mut text = diagnosis.summary.clone();
+    if let Some(fix) = &diagnosis.fix {
+        text.push_str(&format!("\nFix: {fix}"));
+    }
+    if let Some(change) = &diagnosis.project_file_change {
+        text.push_str(&format!("\nChange: in {}, set {}", change.file, change.set));
+    }
+    if let Some(caution) = &diagnosis.caution {
+        text.push_str(&format!("\nCaution: {caution}"));
+    }
+    text
 }
 
 #[cfg(test)]

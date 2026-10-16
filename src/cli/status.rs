@@ -8,9 +8,15 @@ use anyhow::Context;
 use clap::Parser;
 use termcolor::{BufferWriter, Color, ColorSpec, WriteColor};
 
-use crate::{session_registry, web_api::SessionStatusResponse};
+use crate::{
+    session_registry::{self, SessionBeacon},
+    web_api::SessionStatusResponse,
+};
 
-use super::GlobalOptions;
+use super::{
+    diagnose::{diagnose, Diagnosis, DiagnosisState},
+    GlobalOptions,
+};
 
 /// How long to wait on a server that is running but not answering. Kept short
 /// because the caller is usually a scripted poll, and a hung status check is
@@ -41,12 +47,16 @@ pub struct StatusCommand {
 
 impl StatusCommand {
     pub fn run(self, global: GlobalOptions) -> anyhow::Result<()> {
-        let status = fetch_status(self.port, self.project.as_deref())?;
+        let (session, status) = fetch_session_status(self.port, self.project.as_deref())?;
+        let diagnosis = diagnose(&status, Some(session.port));
 
         if self.json {
-            println!("{}", serde_json::to_string_pretty(&status)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&with_diagnosis(&status, &diagnosis)?)?
+            );
         } else {
-            show_status(&status, global.color.into())?;
+            show_status(&status, &diagnosis, global.color.into())?;
         }
 
         if self.require_studio && !status.studio_connected {
@@ -63,10 +73,11 @@ impl StatusCommand {
 }
 
 /// Fetches status for one session, resolving which session that is first.
-pub fn fetch_status(
+/// Also returns the registry entry it resolved, whose port the diagnosis needs.
+pub fn fetch_session_status(
     port: Option<u16>,
     project: Option<&std::path::Path>,
-) -> anyhow::Result<SessionStatusResponse> {
+) -> anyhow::Result<(SessionBeacon, SessionStatusResponse)> {
     let session = session_registry::resolve(port, project)?;
 
     let client = reqwest::blocking::Client::builder()
@@ -93,10 +104,25 @@ pub fn fetch_status(
         );
     }
 
-    Ok(response.json()?)
+    Ok((session, response.json()?))
 }
 
-fn show_status(status: &SessionStatusResponse, color: termcolor::ColorChoice) -> io::Result<()> {
+/// The status as JSON with the diagnosis added under `diagnosis`. A new key
+/// rather than a new shape, so existing consumers of `--json` keep working.
+pub fn with_diagnosis(
+    status: &SessionStatusResponse,
+    diagnosis: &Diagnosis,
+) -> anyhow::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(status)?;
+    value["diagnosis"] = serde_json::to_value(diagnosis)?;
+    Ok(value)
+}
+
+fn show_status(
+    status: &SessionStatusResponse,
+    diagnosis: &Diagnosis,
+    color: termcolor::ColorChoice,
+) -> io::Result<()> {
     let writer = BufferWriter::stdout(color);
     let mut buffer = writer.buffer();
 
@@ -192,6 +218,36 @@ fn show_status(status: &SessionStatusResponse, color: termcolor::ColorChoice) ->
                 buffer.set_color(&ColorSpec::new())?;
                 writeln!(&mut buffer, ": {}", verdict.reason)?;
             }
+        }
+    }
+
+    if diagnosis.state != DiagnosisState::Connected {
+        writeln!(&mut buffer)?;
+        buffer.set_color(&bold)?;
+        writeln!(&mut buffer, "Why not connected")?;
+        buffer.set_color(&ColorSpec::new())?;
+        writeln!(&mut buffer, "  {}", diagnosis.summary)?;
+
+        if let Some(fix) = &diagnosis.fix {
+            writeln!(&mut buffer, "  Fix: {fix}")?;
+        }
+        if let Some(change) = &diagnosis.project_file_change {
+            writeln!(
+                &mut buffer,
+                "  Change: in {}, set {}{}",
+                change.file,
+                change.set,
+                if change.requires_restart {
+                    ", then restart the serve session"
+                } else {
+                    ""
+                }
+            )?;
+        }
+        if let Some(caution) = &diagnosis.caution {
+            buffer.set_color(&yellow)?;
+            writeln!(&mut buffer, "  Caution: {caution}")?;
+            buffer.set_color(&ColorSpec::new())?;
         }
     }
 

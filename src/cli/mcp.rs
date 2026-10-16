@@ -20,13 +20,20 @@ use serde_json::{json, Value};
 
 use crate::session_registry;
 
-use super::{status::fetch_status, GlobalOptions};
+use super::{
+    diagnose::{diagnose, DiagnosisState, PLUGIN_DEFAULT_PORT_RANGES},
+    status::{fetch_session_status, now_secs, with_diagnosis},
+    GlobalOptions,
+};
 
 /// The newest MCP revision this server implements. A client asking for an older
 /// revision is answered in its own revision, since nothing here depends on
 /// features added between them.
 const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// The first revision with `structuredContent` in tool results.
+const STRUCTURED_CONTENT_VERSION: &str = "2025-06-18";
 
 /// How long to wait for a freshly spawned server to advertise itself before
 /// reporting the start as failed.
@@ -58,6 +65,10 @@ struct McpServer {
     /// Serve sessions this server started, kept so they can be stopped and
     /// reaped rather than left as orphans when the agent moves on.
     spawned: HashMap<u16, Child>,
+
+    /// The MCP revision agreed in `initialize`, which decides whether results
+    /// may carry `structuredContent`.
+    protocol_version: String,
 }
 
 impl McpServer {
@@ -65,6 +76,7 @@ impl McpServer {
         Self {
             read_only,
             spawned: HashMap::new(),
+            protocol_version: LATEST_PROTOCOL_VERSION.to_owned(),
         }
     }
 
@@ -149,7 +161,7 @@ impl McpServer {
         }
     }
 
-    fn initialize(&self, params: Value) -> Value {
+    fn initialize(&mut self, params: Value) -> Value {
         let requested = params
             .get("protocolVersion")
             .and_then(Value::as_str)
@@ -160,6 +172,7 @@ impl McpServer {
         } else {
             LATEST_PROTOCOL_VERSION
         };
+        self.protocol_version = version.to_owned();
 
         json!({
             "protocolVersion": version,
@@ -169,10 +182,15 @@ impl McpServer {
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "instructions":
-                "Roxo syncs a filesystem project into Roblox Studio. Call roxo_sessions to see \
-                 what is running. Before assuming a file change reached Studio, check \
-                 roxo_status: a running server does not imply a connected editor. Use \
-                 roxo_wait_for_studio after starting a session to block until Studio attaches.",
+                "Roxo syncs a filesystem project into Roblox Studio. The usual loop is: \
+                 roxo_sessions to see what is running, roxo_serve_start if nothing serves the \
+                 project, then roxo_wait_for_studio. A running server does not imply a connected \
+                 editor, so check roxo_status before assuming a file change reached Studio. \
+                 When Studio is not connected, the `diagnosis` in those results says why \
+                 (nothing probed the port, or a place probed and declined) and gives the fix, \
+                 including the exact project-file change when one would help. Roxo never \
+                 connects a place the project does not identify, so do not apply a suggested \
+                 servePlaceIds change unless the place really belongs to the project.",
         })
     }
 
@@ -194,8 +212,11 @@ impl McpServer {
             json!({
                 "name": "roxo_status",
                 "description":
-                    "Report a serve session's state, including whether Studio is actually \
-                     connected. Check this before assuming file changes reached Studio.",
+                    "Report a serve session's state: whether Studio is actually connected, which \
+                     Studio places probed it recently, and a `diagnosis` with `state` \
+                     (connected, declined, ambiguous, probed, not-probed), a `fix`, and when \
+                     useful a `projectFileChange`. Check this before assuming file changes \
+                     reached Studio.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -210,12 +231,24 @@ impl McpServer {
             json!({
                 "name": "roxo_wait_for_studio",
                 "description":
-                    "Block until a Studio client attaches to a serve session, or until the \
-                     timeout expires. Use after starting a session.",
+                    "Block until a Studio client attaches to a serve session. Returns the status \
+                     once connected. Fails early when a Studio place reports that it declined \
+                     the session, and on timeout, in both cases with a `diagnosis` saying why \
+                     and how to fix it. Use after roxo_serve_start.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "port": port_property,
+                        "project": {
+                            "type": "string",
+                            "description": "Path to the project, as an alternative to port.",
+                        },
+                        "failFast": {
+                            "type": "boolean",
+                            "description":
+                                "Return as soon as a place declines the session instead of \
+                                 waiting out the timeout. Defaults to true.",
+                        },
                         "timeoutSeconds": {
                             "type": "integer",
                             "description": "How long to wait before giving up. Defaults to 60.",
@@ -324,10 +357,18 @@ impl McpServer {
             )));
         }
 
+        // Waiting can end without Studio connecting: a failed call that still
+        // carries a structured diagnosis for the agent to act on.
+        if name == "roxo_wait_for_studio" {
+            return Ok(match self.tool_wait_for_studio(&arguments) {
+                Ok((value, connected)) => self.tool_result(value, !connected),
+                Err(err) => tool_error(format!("{err:#}")),
+            });
+        }
+
         let outcome = match name.as_str() {
             "roxo_sessions" => self.tool_sessions(),
             "roxo_status" => self.tool_status(&arguments),
-            "roxo_wait_for_studio" => self.tool_wait_for_studio(&arguments),
             "roxo_serve_start" => self.tool_serve_start(&arguments),
             "roxo_serve_stop" => self.tool_serve_stop(&arguments),
             "roxo_build" => self.tool_build(&arguments),
@@ -339,9 +380,29 @@ impl McpServer {
         // protocol error, so the agent can read the reason and adjust instead
         // of treating it as a broken connection.
         Ok(match outcome {
-            Ok(value) => tool_ok(value),
+            Ok(value) => self.tool_result(value, false),
             Err(err) => tool_error(format!("{err:#}")),
         })
+    }
+
+    /// Wraps a tool's result in MCP's content envelope.
+    ///
+    /// The value is sent as pretty JSON text, which every MCP client can
+    /// render, and also as `structuredContent` to clients on a revision that
+    /// defines it, so they need not parse the text.
+    fn tool_result(&self, value: Value, is_error: bool) -> Value {
+        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+        let mut result = json!({ "content": [{ "type": "text", "text": text }] });
+
+        // Revisions are dates, so they order as strings.
+        if self.protocol_version.as_str() >= STRUCTURED_CONTENT_VERSION && value.is_object() {
+            result["structuredContent"] = value;
+        }
+        if is_error {
+            result["isError"] = json!(true);
+        }
+
+        result
     }
 
     fn tool_sessions(&self) -> anyhow::Result<Value> {
@@ -358,39 +419,71 @@ impl McpServer {
     }
 
     fn tool_status(&self, arguments: &Value) -> anyhow::Result<Value> {
-        let status = fetch_status(port_of(arguments), project_of(arguments).as_deref())?;
+        let (session, status) =
+            fetch_session_status(port_of(arguments), project_of(arguments).as_deref())?;
 
-        Ok(serde_json::to_value(status)?)
+        with_diagnosis(&status, &diagnose(&status, Some(session.port)))
     }
 
-    fn tool_wait_for_studio(&self, arguments: &Value) -> anyhow::Result<Value> {
+    /// Returns the result and whether Studio connected.
+    fn tool_wait_for_studio(&self, arguments: &Value) -> anyhow::Result<(Value, bool)> {
         let timeout = arguments
             .get("timeoutSeconds")
             .and_then(Value::as_u64)
             .unwrap_or(60);
+        let fail_fast = arguments
+            .get("failFast")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         let port = port_of(arguments);
+        let project = project_of(arguments);
+        let started_at = now_secs();
         let deadline = Instant::now() + Duration::from_secs(timeout);
         let mut last_error = None;
+        let mut last_report = None;
 
         loop {
-            match fetch_status(port, None) {
-                Ok(status) if status.studio_connected => {
-                    return Ok(serde_json::to_value(status)?);
+            match fetch_session_status(port, project.as_deref()) {
+                Ok((session, status)) => {
+                    let diagnosis = diagnose(&status, Some(session.port));
+                    let report = with_diagnosis(&status, &diagnosis)?;
+
+                    if status.studio_connected {
+                        return Ok((report, true));
+                    }
+
+                    // Only a verdict given after this wait began counts. One
+                    // from before may predate a fix the agent just applied.
+                    let fresh_decline = matches!(
+                        diagnosis.state,
+                        DiagnosisState::Declined | DiagnosisState::Ambiguous
+                    ) && status.recent_probes.iter().any(|probe| {
+                        probe
+                            .verdict
+                            .as_ref()
+                            .is_some_and(|verdict| verdict.reported_at > started_at)
+                    });
+
+                    if fail_fast && fresh_decline {
+                        return Ok((wait_failure("declined", timeout, report), false));
+                    }
+
+                    last_report = Some(report);
                 }
-                Ok(_) => {}
                 Err(err) => last_error = Some(err),
             }
 
             if Instant::now() >= deadline {
-                anyhow::bail!(
-                    "Studio did not connect within {timeout}s. Check that the place is open in \
-                     Studio with the Roxo plugin installed, and that the project's auto-connect \
-                     policy is not 'off'.{}",
-                    last_error
-                        .map(|err| format!(" Last attempt: {err:#}"))
-                        .unwrap_or_default()
-                );
+                return match last_report {
+                    Some(report) => Ok((wait_failure("timeout", timeout, report), false)),
+                    None => anyhow::bail!(
+                        "No serve session answered within {timeout}s.{}",
+                        last_error
+                            .map(|err| format!(" Last attempt: {err:#}"))
+                            .unwrap_or_default()
+                    ),
+                };
             }
 
             thread::sleep(Duration::from_millis(500));
@@ -445,12 +538,25 @@ impl McpServer {
             Some(session) => {
                 self.spawned.insert(session.port, child);
 
+                let scanned = PLUGIN_DEFAULT_PORT_RANGES
+                    .iter()
+                    .any(|(low, high)| (*low..=*high).contains(&session.port));
+
+                let hint = if scanned {
+                    "The server is listening, but Studio is not necessarily connected. Call \
+                     roxo_wait_for_studio to confirm before relying on the sync."
+                } else {
+                    "The server is listening on a port outside the Studio plugin's default scan \
+                     ranges. A current plugin still finds it through any other Roxo session \
+                     inside them; otherwise restart it on a port inside them. Call \
+                     roxo_wait_for_studio to confirm."
+                };
+
                 Ok(json!({
                     "started": true,
                     "session": session,
-                    "hint":
-                        "The server is listening, but Studio is not necessarily connected. Call \
-                         roxo_wait_for_studio to confirm before relying on the sync.",
+                    "inPluginScanRange": scanned,
+                    "hint": hint,
                 }))
             }
             None => {
@@ -573,14 +679,21 @@ fn project_of(arguments: &Value) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Wraps a successful tool result in MCP's content envelope.
-///
-/// The value is sent as pretty JSON text because that is what every MCP client
-/// can render, and it keeps the payload readable in an agent's transcript.
-fn tool_ok(value: Value) -> Value {
-    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+/// The result of a wait that ended without Studio connecting. The diagnosis is
+/// lifted to the top so it is the first thing an agent reads.
+fn wait_failure(outcome: &str, timeout: u64, mut report: Value) -> Value {
+    let diagnosis = report
+        .as_object_mut()
+        .and_then(|report| report.remove("diagnosis"))
+        .unwrap_or(Value::Null);
 
-    json!({ "content": [{ "type": "text", "text": text }] })
+    json!({
+        "connected": false,
+        "outcome": outcome,
+        "timeoutSeconds": timeout,
+        "diagnosis": diagnosis,
+        "status": report,
+    })
 }
 
 fn tool_error(message: String) -> Value {
@@ -646,7 +759,7 @@ mod test {
 
     #[test]
     fn initialize_echoes_a_supported_protocol_version() {
-        let server = McpServer::new(false);
+        let mut server = McpServer::new(false);
 
         let result = server.initialize(json!({ "protocolVersion": "2024-11-05" }));
         assert_eq!(result["protocolVersion"], "2024-11-05");
@@ -654,6 +767,57 @@ mod test {
         // An unknown revision falls back to the newest one we implement.
         let result = server.initialize(json!({ "protocolVersion": "1999-01-01" }));
         assert_eq!(result["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn structured_content_is_only_sent_to_revisions_that_define_it() {
+        let mut server = McpServer::new(false);
+        let value = json!({ "studioConnected": false });
+
+        server.initialize(json!({ "protocolVersion": "2025-06-18" }));
+        let result = server.tool_result(value.clone(), false);
+        assert_eq!(result["structuredContent"], value);
+        assert!(result.get("isError").is_none());
+
+        server.initialize(json!({ "protocolVersion": "2025-03-26" }));
+        let result = server.tool_result(value, true);
+        assert!(result.get("structuredContent").is_none());
+        assert_eq!(result["isError"], true);
+        // The text form is always there for clients that only read content.
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("studioConnected"));
+    }
+
+    #[test]
+    fn a_failed_wait_leads_with_the_diagnosis() {
+        let report = json!({
+            "studioConnected": false,
+            "diagnosis": { "state": "declined", "fix": "add the place" },
+        });
+
+        let result = wait_failure("declined", 60, report);
+
+        assert_eq!(result["connected"], false);
+        assert_eq!(result["outcome"], "declined");
+        assert_eq!(result["diagnosis"]["state"], "declined");
+        // Not duplicated inside the status it was lifted out of.
+        assert!(result["status"].get("diagnosis").is_none());
+        assert_eq!(result["status"]["studioConnected"], false);
+    }
+
+    #[test]
+    fn waiting_accepts_a_project_path_like_status_does() {
+        let tools = McpServer::new(true).tool_definitions();
+        let wait = tools
+            .iter()
+            .find(|tool| tool["name"] == "roxo_wait_for_studio")
+            .unwrap();
+
+        let properties = &wait["inputSchema"]["properties"];
+        assert!(properties.get("project").is_some());
+        assert!(properties.get("failFast").is_some());
     }
 
     #[test]
